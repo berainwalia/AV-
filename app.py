@@ -1,11 +1,13 @@
 # ==========================================
 # SIDEBAR / CUSTOM RANGE GENERATOR
 # ==========================================
-# Generate 5-minute intervals starting from market open (09:15 AM to 03:30 PM)
 def generate_5min_intervals():
     intervals = []
-    start = datetime.combine(datetime.today(), time(9, 15))
-    end = datetime.combine(datetime.today(), time(15, 30))
+    # Use today's date from now_dt or current date
+    today_date = now_dt.date()
+    
+    start = datetime.combine(today_date, time(9, 15))
+    end = datetime.combine(today_date, time(15, 30))
     
     current = start
     while current < end:
@@ -39,38 +41,3 @@ if st.sidebar.button("🧹 Reset Snapshot Database"):
     conn.close()
     st.sidebar.success("Database cleared!")
     st.rerun()
-
-# ==========================================
-# CUSTOM RANGE TAB
-# ==========================================
-with tab_custom:
-    start_ts_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
-    end_ts_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
-    
-    st.subheader(f"Top Gainers for Slot: {selected_slot_label}")
-    
-    df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(
-        start_ts_str, 
-        end_ts_str, 
-        segment_filter=selected_segment, 
-        label_name="5m Slot Gain"
-    )
-    
-    if not df_custom.empty:
-        st.caption(f"Snapshot delta: `{act_start.split(' ')[1]}` ➔ `{act_end.split(' ')[1]}`.")
-        styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-        st.dataframe(
-            styled_custom, 
-            use_container_width=True,
-            column_config={
-                "Symbol": st.column_config.Column(alignment="center"),
-                "Sector Index": st.column_config.Column(alignment="center"),
-                "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                "Segment": st.column_config.Column(alignment="center"),
-                "Price Change %": st.column_config.Column(alignment="center"),
-                "End Rel Vol": st.column_config.Column(alignment="center"),
-                gain_col_name: st.column_config.Column(alignment="center")
-            }
-        )
-    else:
-        st.info(f"No snapshot data recorded for {selected_slot_label} yet. Ensure Streamlit is running during market hours to log snapshots continuously.")
