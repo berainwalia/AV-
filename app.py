@@ -228,11 +228,11 @@ def fetch_day_movers(live_df, segment_filter="All Stocks"):
 
     df['TradingView Chart'] = df['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
 
-    # Top Day Gainers: Positive price change, sorted by Relative Volume
-    gainers = df[df['ChangePct'] > 0].sort_values(by='RelVol', ascending=False).head(10).copy()
+    # Top Gainers: Sorted by Price Change % (highest positive first)
+    gainers = df.sort_values(by='ChangePct', ascending=False).head(10).copy()
     
-    # Top Day Losers: Negative price change, sorted by Relative Volume
-    losers = df[df['ChangePct'] < 0].sort_values(by='RelVol', ascending=False).head(10).copy()
+    # Top Losers: Sorted by Price Change % (lowest/most negative first)
+    losers = df.sort_values(by='ChangePct', ascending=True).head(10).copy()
 
     for target_df in [gainers, losers]:
         if not target_df.empty:
@@ -240,7 +240,7 @@ def fetch_day_movers(live_df, segment_filter="All Stocks"):
             target_df['ChangePct'] = target_df['ChangePct'].round(2)
 
     cols_order = ['Symbol', 'Sector Index', 'TradingView Chart', 'Segment', 'ChangePct', 'RelVol']
-    col_names = ['Symbol', 'Sector Index', 'TradingView Chart', 'Segment', 'Price Change %', 'Day Rel Vol']
+    col_names = ['Symbol', 'Sector Index', 'TradingView Chart', 'Segment', 'Price Change %', 'Rel Vol']
 
     if not gainers.empty:
         gainers = gainers[cols_order]
@@ -403,7 +403,7 @@ with tab_custom:
 
 # Day Gainers/Losers Tab Execution
 with tab_day:
-    st.subheader("🔥 Top Day Gainers & Losers (Sorted by Relative Volume)")
+    st.subheader("🔥 Top Day Gainers & Losers (Sorted by Price Change %)")
     
     gainers_df, losers_df = fetch_day_movers(live_df, segment_filter=selected_segment)
     
@@ -422,7 +422,7 @@ with tab_day:
                     "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
                     "Segment": st.column_config.Column(alignment="center"),
                     "Price Change %": st.column_config.Column(alignment="center"),
-                    "Day Rel Vol": st.column_config.Column(alignment="center")
+                    "Rel Vol": st.column_config.Column(alignment="center")
                 }
             )
         else:
@@ -441,7 +441,7 @@ with tab_day:
                     "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
                     "Segment": st.column_config.Column(alignment="center"),
                     "Price Change %": st.column_config.Column(alignment="center"),
-                    "Day Rel Vol": st.column_config.Column(alignment="center")
+                    "Rel Vol": st.column_config.Column(alignment="center")
                 }
             )
         else:
