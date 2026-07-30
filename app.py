@@ -80,12 +80,11 @@ SECTOR_INDEX_MAP = {
     "JUBLFOOD": "NIFTY Retail", "PVRINOX": "NIFTY Media", "ZEEL": "NIFTY Media", "SUNTV": "NIFTY Media"
 }
 
-# Active F&O stock set
 FNO_STOCKS = set(SECTOR_INDEX_MAP.keys())
 
 st.set_page_config(page_title="TradingView RelVol Dashboard", layout="wide")
 
-# Auto-refresh dashboard every 60 seconds
+# Auto-refresh every 60 seconds
 st_autorefresh(interval=60000, key="datarefresh")
 
 # ==========================================
@@ -165,29 +164,32 @@ def fetch_live_data():
         st.error(f"Error fetching data from TradingView: {e}")
         return pd.DataFrame()
 
-def calculate_gain_by_timestamps(start_ts, end_ts, segment_filter="All Stocks", label_name="Gain"):
-    """Calculates relative volume gain between two specific timestamp strings."""
+def calculate_gain_by_exact_timestamps(start_ts, end_ts, segment_filter="All Stocks", label_name="Gain"):
+    """Calculates relative volume gain between any two customized timestamps."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Get closest snapshot to end_ts
+    # Locate closest recorded snapshot on or before end_ts
     cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (end_ts,))
     end_row = cursor.fetchone()
     
-    # Get closest snapshot to start_ts
+    # Locate closest recorded snapshot on or before start_ts
     cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (start_ts,))
     start_row = cursor.fetchone()
 
     if not end_row or not start_row or not end_row[0] or not start_row[0]:
         conn.close()
-        return pd.DataFrame(), label_name
+        return pd.DataFrame(), label_name, None, None
 
-    df_end = pd.read_sql_query("SELECT symbol, rel_vol, change_pct, sector_index FROM relvol_snapshots WHERE timestamp = ?", conn, params=(end_row[0],))
-    df_start = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(start_row[0],))
+    actual_start_ts = start_row[0]
+    actual_end_ts = end_row[0]
+
+    df_end = pd.read_sql_query("SELECT symbol, rel_vol, change_pct, sector_index FROM relvol_snapshots WHERE timestamp = ?", conn, params=(actual_end_ts,))
+    df_start = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(actual_start_ts,))
     conn.close()
 
     if df_end.empty or df_start.empty:
-        return pd.DataFrame(), label_name
+        return pd.DataFrame(), label_name, actual_start_ts, actual_end_ts
 
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
@@ -207,12 +209,13 @@ def calculate_gain_by_timestamps(start_ts, end_ts, segment_filter="All Stocks", 
     top['change_pct'] = top['change_pct'].round(2)
 
     top.columns = ['Symbol', 'Sector Index', 'TradingView Chart', 'Segment', 'Price Change %', 'End Rel Vol', label_name]
-    return top.reset_index(drop=True), label_name
+    return top.reset_index(drop=True), label_name, actual_start_ts, actual_end_ts
 
 def calculate_gain_relative(minutes, current_time_str, segment_filter="All Stocks"):
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
     start_str = (curr_dt - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
-    return calculate_gain_by_timestamps(start_str, current_time_str, segment_filter, f'+{minutes}m Gain')
+    df, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, segment_filter, f'+{minutes}m Gain')
+    return df, label
 
 # ==========================================
 # COLOR HIGHLIGHT FUNCTION
@@ -243,20 +246,23 @@ if not live_df.empty:
 st.title("📈 TradingView Relative Volume Tracker")
 st.caption(f"Last updated: {now_str} IST (Auto-refreshes every 60 seconds)")
 
-# Sidebar Controls
-st.sidebar.header("Segment Filter")
+# Sidebar Segment Selector
+st.sidebar.header("Filter Options")
 selected_segment = st.sidebar.radio(
     "Select Stock Segment:",
     options=["All Stocks", "F&O Stocks Only", "Cash Stocks Only"],
     index=0
 )
 
+# Sidebar Custom Time Window Pickers
 st.sidebar.markdown("---")
-st.sidebar.header("⏱️ Custom Time Window")
-start_time_input = st.sidebar.time_input("Start Time", value=time(10, 0))
-end_time_input = st.sidebar.time_input("End Time", value=time(10, 30))
+st.sidebar.header("⚙️ Custom Time Frame")
+st.sidebar.caption("Set custom start and end times for market tracking:")
 
-if st.sidebar.button("🧹 Manual Reset Database"):
+custom_start_time = st.sidebar.time_input("Start Time:", value=time(9, 30))
+custom_end_time = st.sidebar.time_input("End Time:", value=time(9, 40))
+
+if st.sidebar.button("🧹 Reset Snapshot Database"):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM relvol_snapshots")
@@ -265,8 +271,10 @@ if st.sidebar.button("🧹 Manual Reset Database"):
     st.sidebar.success("Database cleared!")
     st.rerun()
 
-# Timeframe Selector Tabs
-tab1, tab3, tab5, tab10, tab15, tab_custom = st.tabs(["1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range"])
+# Timeframe Tabs
+tab1, tab3, tab5, tab10, tab15, tab_custom = st.tabs([
+    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range"
+])
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
     with tab:
@@ -291,34 +299,39 @@ for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
         else:
             st.info("Accumulating data... Please wait a few minutes.")
 
-# Render Custom Range Tab
+# Render Custom Time Range Tab
 with tab_custom:
-    start_ts_str = f"{today_date_str} {start_time_input.strftime('%H:%M:%S')}"
-    end_ts_str = f"{today_date_str} {end_time_input.strftime('%H:%M:%S')}"
+    start_ts_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
+    end_ts_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
     
-    st.subheader(f"Top Gainers: {start_time_input.strftime('%I:%M %p')} ➔ {end_time_input.strftime('%I:%M %p')}")
+    st.subheader(f"Top Gainers: {custom_start_time.strftime('%I:%M %p')} ➔ {custom_end_time.strftime('%I:%M %p')}")
     
-    df_custom, gain_col_name = calculate_gain_by_timestamps(
-        start_ts_str, 
-        end_ts_str, 
-        segment_filter=selected_segment, 
-        label_name="Custom Window Gain"
-    )
-    
-    if not df_custom.empty:
-        styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-        st.dataframe(
-            styled_custom, 
-            use_container_width=True,
-            column_config={
-                "Symbol": st.column_config.Column(alignment="center"),
-                "Sector Index": st.column_config.Column(alignment="center"),
-                "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                "Segment": st.column_config.Column(alignment="center"),
-                "Price Change %": st.column_config.Column(alignment="center"),
-                "End Rel Vol": st.column_config.Column(alignment="center"),
-                gain_col_name: st.column_config.Column(alignment="center")
-            }
-        )
+    if custom_start_time >= custom_end_time:
+        st.warning("⚠️ Please select an **End Time** that is after the **Start Time**.")
     else:
-        st.warning(f"No snapshot data recorded between {start_time_input.strftime('%I:%M %p')} and {end_time_input.strftime('%I:%M %p')} for today yet.")
+        df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(
+            start_ts_str, 
+            end_ts_str, 
+            segment_filter=selected_segment, 
+            label_name="Custom Window Gain"
+        )
+        
+        if not df_custom.empty:
+            st.caption(f"Comparing recorded database snapshots from `{act_start.split(' ')[1]}` to `{act_end.split(' ')[1]}`.")
+            styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+            st.dataframe(
+                styled_custom, 
+                use_container_width=True,
+                column_config={
+                    "Symbol": st.column_config.Column(alignment="center"),
+                    "Sector Index": st.column_config.Column(alignment="center"),
+                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
+                    "Segment": st.column_config.Column(alignment="center"),
+                    "Price Change %": st.column_config.Column(alignment="center"),
+                    "End Rel Vol": st.column_config.Column(alignment="center"),
+                    gain_col_name: st.column_config.Column(alignment="center")
+                }
+            )
+        else:
+            st.info(f"No snapshot data recorded between {custom_start_time.strftime('%I:%M %p')} and {custom_end_time.strftime('%I:%M %p')} yet. Keep Streamlit running during market hours to collect snapshots.")
+            
