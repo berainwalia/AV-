@@ -223,22 +223,21 @@ def style_price_change(val):
     return ''
 
 # ==========================================
-# 5-MINUTE INTERVAL GENERATOR
+# 5-MINUTE STEP TIME OPTIONS GENERATOR (09:15 to 15:30)
 # ==========================================
-def generate_5min_intervals():
-    intervals = []
+def generate_5min_time_options():
+    time_options = []
     today_date = datetime.now(TIMEZONE).date()
     
     start = datetime.combine(today_date, time(9, 15))
     end = datetime.combine(today_date, time(15, 30))
     
     current = start
-    while current < end:
-        next_interval = current + timedelta(minutes=5)
-        label = f"{current.strftime('%I:%M %p')} - {next_interval.strftime('%I:%M %p')}"
-        intervals.append((label, current.time(), next_interval.time()))
-        current = next_interval
-    return intervals
+    while current <= end:
+        label = current.strftime('%I:%M %p')
+        time_options.append((label, current.time()))
+        current += timedelta(minutes=5)
+    return time_options
 
 # ==========================================
 # DASHBOARD UI & EXECUTION
@@ -258,7 +257,7 @@ if not live_df.empty:
 st.title("📈 TradingView Relative Volume Tracker")
 st.caption(f"Last updated: {now_str} IST (Auto-refreshes every 60 seconds)")
 
-# Sidebar Options
+# Sidebar Segment Filter
 st.sidebar.header("Filter Options")
 selected_segment = st.sidebar.radio(
     "Select Stock Segment:",
@@ -266,22 +265,30 @@ selected_segment = st.sidebar.radio(
     index=0
 )
 
-# 5-Min Time Slot Picker
+# Custom Time Range Picker
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ 5-Minute Time Windows")
+st.sidebar.header("⚙️ Custom Time Range")
 
-five_min_slots = generate_5min_intervals()
-slot_labels = [slot[0] for slot in five_min_slots]
+time_options = generate_5min_time_options()
+time_labels = [opt[0] for opt in time_options]
 
-selected_slot_label = st.sidebar.selectbox(
-    "Select 5-Min Market Slot:",
-    options=slot_labels,
-    index=0
+selected_start_label = st.sidebar.selectbox(
+    "Select Start Time:",
+    options=time_labels,
+    index=0  # Defaults to 09:15 AM
 )
 
-selected_slot = next(slot for slot in five_min_slots if slot[0] == selected_slot_label)
-custom_start_time = selected_slot[1]
-custom_end_time = selected_slot[2]
+start_idx = time_labels.index(selected_start_label)
+default_end_idx = min(start_idx + 1, len(time_labels) - 1)
+
+selected_end_label = st.sidebar.selectbox(
+    "Select End Time:",
+    options=time_labels,
+    index=default_end_idx  # Defaults to 09:20 AM
+)
+
+custom_start_time = next(opt[1] for opt in time_options if opt[0] == selected_start_label)
+custom_end_time = next(opt[1] for opt in time_options if opt[0] == selected_end_label)
 
 if st.sidebar.button("🧹 Reset Snapshot Database"):
     conn = sqlite3.connect(DB_NAME)
@@ -320,35 +327,38 @@ for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
         else:
             st.info("Accumulating data... Please wait a few minutes.")
 
-# Render Custom Time Range Tab
+# Custom Range Tab Execution
 with tab_custom:
-    start_ts_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
-    end_ts_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
+    st.subheader(f"Top Gainers: {selected_start_label} ➔ {selected_end_label}")
     
-    st.subheader(f"Top Gainers for Slot: {selected_slot_label}")
-    
-    df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(
-        start_ts_str, 
-        end_ts_str, 
-        segment_filter=selected_segment, 
-        label_name="5m Slot Gain"
-    )
-    
-    if not df_custom.empty:
-        st.caption(f"Comparing database snapshots from `{act_start.split(' ')[1]}` to `{act_end.split(' ')[1]}`.")
-        styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-        st.dataframe(
-            styled_custom, 
-            use_container_width=True,
-            column_config={
-                "Symbol": st.column_config.Column(alignment="center"),
-                "Sector Index": st.column_config.Column(alignment="center"),
-                "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                "Segment": st.column_config.Column(alignment="center"),
-                "Price Change %": st.column_config.Column(alignment="center"),
-                "End Rel Vol": st.column_config.Column(alignment="center"),
-                gain_col_name: st.column_config.Column(alignment="center")
-            }
-        )
+    if custom_start_time >= custom_end_time:
+        st.warning("⚠️ Please select an **End Time** that is strictly after the **Start Time**.")
     else:
-        st.info(f"No snapshot data recorded for {selected_slot_label} yet. Keep Streamlit running during market hours to log snapshots.")
+        start_ts_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
+        end_ts_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
+        
+        df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(
+            start_ts_str, 
+            end_ts_str, 
+            segment_filter=selected_segment, 
+            label_name="Custom Window Gain"
+        )
+        
+        if not df_custom.empty:
+            st.caption(f"Comparing database snapshots from `{act_start.split(' ')[1]}` to `{act_end.split(' ')[1]}`.")
+            styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+            st.dataframe(
+                styled_custom, 
+                use_container_width=True,
+                column_config={
+                    "Symbol": st.column_config.Column(alignment="center"),
+                    "Sector Index": st.column_config.Column(alignment="center"),
+                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
+                    "Segment": st.column_config.Column(alignment="center"),
+                    "Price Change %": st.column_config.Column(alignment="center"),
+                    "End Rel Vol": st.column_config.Column(alignment="center"),
+                    gain_col_name: st.column_config.Column(alignment="center")
+                }
+            )
+        else:
+            st.info(f"No snapshot data recorded between {selected_start_label} and {selected_end_label} yet. Keep Streamlit running during market hours to log snapshots.")
