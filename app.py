@@ -164,7 +164,7 @@ def fetch_live_data():
         st.error(f"Error fetching data from TradingView: {e}")
         return pd.DataFrame()
 
-def calculate_gain_by_exact_timestamps(start_ts, end_ts, segment_filter="F&O Stocks Only", label_name="Rel Vol Chg"):
+def calculate_gain_by_exact_timestamps(start_ts, end_ts, segment_filter="All Stocks", label_name="Gain"):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
@@ -176,7 +176,7 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, segment_filter="F&O Sto
 
     if not end_row or not start_row or not end_row[0] or not start_row[0]:
         conn.close()
-        return pd.DataFrame(), pd.DataFrame(), label_name, None, None
+        return pd.DataFrame(), label_name, None, None
 
     actual_start_ts = start_row[0]
     actual_end_ts = end_row[0]
@@ -186,7 +186,7 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, segment_filter="F&O Sto
     conn.close()
 
     if df_end.empty or df_start.empty:
-        return pd.DataFrame(), pd.DataFrame(), label_name, actual_start_ts, actual_end_ts
+        return pd.DataFrame(), label_name, actual_start_ts, actual_end_ts
 
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
@@ -197,33 +197,60 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, segment_filter="F&O Sto
     elif segment_filter == "Cash Stocks Only":
         merged = merged[merged['Segment'] == "Cash"]
 
-    # Filter/Sort Gainers (Price % > 0 and sorted by RelVol Gain)
-    top_gainers = merged.sort_values(by=['change_pct', 'Gain'], ascending=[False, False]).head(10).copy()
-    top_gainers['TradingView Chart'] = top_gainers['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
+    top = merged.sort_values(by='Gain', ascending=False).head(10).copy()
+    top['TradingView Chart'] = top['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
 
-    top_gainers = top_gainers[['symbol', 'sector_index', 'TradingView Chart', 'Segment', 'change_pct', 'rel_vol_end', 'Gain']].copy()
-    top_gainers['rel_vol_end'] = top_gainers['rel_vol_end'].round(2)
-    top_gainers['Gain'] = top_gainers['Gain'].round(2)
-    top_gainers['change_pct'] = top_gainers['change_pct'].round(2)
-    top_gainers.columns = ['Symbol', 'Sector Index', 'TradingView Chart', 'Segment', 'Price Change %', 'End Rel Vol', label_name]
+    top = top[['symbol', 'sector_index', 'TradingView Chart', 'Segment', 'change_pct', 'rel_vol_end', 'Gain']].copy()
+    top['rel_vol_end'] = top['rel_vol_end'].round(2)
+    top['Gain'] = top['Gain'].round(2)
+    top['change_pct'] = top['change_pct'].round(2)
 
-    # Filter/Sort Losers (Price % < 0 and sorted by lowest price change)
-    top_losers = merged.sort_values(by=['change_pct', 'Gain'], ascending=[True, False]).head(10).copy()
-    top_losers['TradingView Chart'] = top_losers['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
+    top.columns = ['Symbol', 'Sector Index', 'TradingView Chart', 'Segment', 'Price Change %', 'End Rel Vol', label_name]
+    return top.reset_index(drop=True), label_name, actual_start_ts, actual_end_ts
 
-    top_losers = top_losers[['symbol', 'sector_index', 'TradingView Chart', 'Segment', 'change_pct', 'rel_vol_end', 'Gain']].copy()
-    top_losers['rel_vol_end'] = top_losers['rel_vol_end'].round(2)
-    top_losers['Gain'] = top_losers['Gain'].round(2)
-    top_losers['change_pct'] = top_losers['change_pct'].round(2)
-    top_losers.columns = ['Symbol', 'Sector Index', 'TradingView Chart', 'Segment', 'Price Change %', 'End Rel Vol', label_name]
-
-    return top_gainers.reset_index(drop=True), top_losers.reset_index(drop=True), label_name, actual_start_ts, actual_end_ts
-
-def calculate_gain_relative(minutes, current_time_str, segment_filter="F&O Stocks Only"):
+def calculate_gain_relative(minutes, current_time_str, segment_filter="All Stocks"):
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
     start_str = (curr_dt - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
-    df_gainers, df_losers, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, segment_filter, f'+{minutes}m Rel Vol')
-    return df_gainers, df_losers, label
+    df, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, segment_filter, f'+{minutes}m Gain')
+    return df, label
+
+def fetch_day_movers(live_df, segment_filter="All Stocks"):
+    if live_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df = live_df.copy()
+    df['Segment'] = df['Symbol'].apply(lambda s: "⚡ F&O" if s.upper() in FNO_STOCKS else "Cash")
+
+    if segment_filter == "F&O Stocks Only":
+        df = df[df['Segment'] == "⚡ F&O"]
+    elif segment_filter == "Cash Stocks Only":
+        df = df[df['Segment'] == "Cash"]
+
+    df['TradingView Chart'] = df['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
+
+    # Top Day Gainers: Positive price change, sorted by Relative Volume
+    gainers = df[df['ChangePct'] > 0].sort_values(by='RelVol', ascending=False).head(10).copy()
+    
+    # Top Day Losers: Negative price change, sorted by Relative Volume
+    losers = df[df['ChangePct'] < 0].sort_values(by='RelVol', ascending=False).head(10).copy()
+
+    for target_df in [gainers, losers]:
+        if not target_df.empty:
+            target_df['RelVol'] = target_df['RelVol'].round(2)
+            target_df['ChangePct'] = target_df['ChangePct'].round(2)
+
+    cols_order = ['Symbol', 'Sector Index', 'TradingView Chart', 'Segment', 'ChangePct', 'RelVol']
+    col_names = ['Symbol', 'Sector Index', 'TradingView Chart', 'Segment', 'Price Change %', 'Day Rel Vol']
+
+    if not gainers.empty:
+        gainers = gainers[cols_order]
+        gainers.columns = col_names
+
+    if not losers.empty:
+        losers = losers[cols_order]
+        losers.columns = col_names
+
+    return gainers.reset_index(drop=True), losers.reset_index(drop=True)
 
 def style_price_change(val):
     if isinstance(val, (int, float)):
@@ -250,25 +277,6 @@ def generate_5min_time_options():
         current += timedelta(minutes=5)
     return time_options
 
-def render_table(df, gain_col_name):
-    if not df.empty:
-        styled_df = df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-        st.dataframe(
-            styled_df, 
-            use_container_width=True,
-            column_config={
-                "Symbol": st.column_config.Column(alignment="center"),
-                "Sector Index": st.column_config.Column(alignment="center"),
-                "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                "Segment": st.column_config.Column(alignment="center"),
-                "Price Change %": st.column_config.Column(alignment="center"),
-                "End Rel Vol": st.column_config.Column(alignment="center"),
-                gain_col_name: st.column_config.Column(alignment="center")
-            }
-        )
-    else:
-        st.info("No stock data recorded for this window.")
-
 # ==========================================
 # DASHBOARD UI & EXECUTION
 # ==========================================
@@ -284,15 +292,15 @@ live_df = fetch_live_data()
 if not live_df.empty:
     save_snapshot(live_df, now_str)
 
-st.title("📈 TradingView F&O RelVol Dashboard")
+st.title("📈 TradingView Relative Volume Tracker")
 st.caption(f"Last updated: {now_str} IST (Auto-refreshes every 60 seconds)")
 
-# Sidebar Options
+# Sidebar Segment Filter
 st.sidebar.header("Filter Options")
 selected_segment = st.sidebar.radio(
     "Select Stock Segment:",
-    options=["F&O Stocks Only", "All Stocks", "Cash Stocks Only"],
-    index=0  # Defaults to F&O Stocks Only
+    options=["All Stocks", "F&O Stocks Only", "Cash Stocks Only"],
+    index=0
 )
 
 # Custom Time Range Picker
@@ -305,7 +313,7 @@ time_labels = [opt[0] for opt in time_options]
 selected_start_label = st.sidebar.selectbox(
     "Select Start Time:",
     options=time_labels,
-    index=0
+    index=0  # Defaults to 09:15 AM
 )
 
 start_idx = time_labels.index(selected_start_label)
@@ -314,7 +322,7 @@ default_end_idx = min(start_idx + 1, len(time_labels) - 1)
 selected_end_label = st.sidebar.selectbox(
     "Select End Time:",
     options=time_labels,
-    index=default_end_idx
+    index=default_end_idx  # Defaults to 09:20 AM
 )
 
 custom_start_time = next(opt[1] for opt in time_options if opt[0] == selected_start_label)
@@ -330,26 +338,36 @@ if st.sidebar.button("🧹 Reset Snapshot Database"):
     st.rerun()
 
 # Timeframe Tabs
-tab1, tab3, tab5, tab10, tab15, tab_custom = st.tabs([
-    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range"
+tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day = st.tabs([
+    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Day Gainers/Losers"
 ])
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
     with tab:
-        df_gainers, df_losers, gain_col_name = calculate_gain_relative(mins, now_str, segment_filter=selected_segment)
+        st.subheader(f"Top 10 Gainers - Last {mins} Minute(s)")
+        df_gain, gain_col_name = calculate_gain_relative(mins, now_str, segment_filter=selected_segment)
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader(f"🟢 Top Gainers ({mins}m)")
-            render_table(df_gainers, gain_col_name)
-            
-        with col2:
-            st.subheader(f"🔴 Top Losers ({mins}m)")
-            render_table(df_losers, gain_col_name)
+        if not df_gain.empty:
+            styled_df = df_gain.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+            st.dataframe(
+                styled_df, 
+                use_container_width=True,
+                column_config={
+                    "Symbol": st.column_config.Column(alignment="center"),
+                    "Sector Index": st.column_config.Column(alignment="center"),
+                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
+                    "Segment": st.column_config.Column(alignment="center"),
+                    "Price Change %": st.column_config.Column(alignment="center"),
+                    "End Rel Vol": st.column_config.Column(alignment="center"),
+                    gain_col_name: st.column_config.Column(alignment="center")
+                }
+            )
+        else:
+            st.info("Accumulating data... Please wait a few minutes.")
 
 # Custom Range Tab Execution
 with tab_custom:
-    st.subheader(f"Custom Window ({selected_start_label} ➔ {selected_end_label})")
+    st.subheader(f"Top Gainers: {selected_start_label} ➔ {selected_end_label}")
     
     if custom_start_time >= custom_end_time:
         st.warning("⚠️ Please select an **End Time** that is strictly after the **Start Time**.")
@@ -357,21 +375,74 @@ with tab_custom:
         start_ts_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
         end_ts_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
         
-        df_gainers, df_losers, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(
+        df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(
             start_ts_str, 
             end_ts_str, 
             segment_filter=selected_segment, 
-            label_name="Window Rel Vol"
+            label_name="Custom Window Gain"
         )
         
-        if act_start and act_end:
+        if not df_custom.empty:
             st.caption(f"Comparing database snapshots from `{act_start.split(' ')[1]}` to `{act_end.split(' ')[1]}`.")
-            
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🟢 Top Gainers")
-            render_table(df_gainers, gain_col_name)
-            
-        with col2:
-            st.subheader("🔴 Top Losers")
-            render_table(df_losers, gain_col_name)
+            styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+            st.dataframe(
+                styled_custom, 
+                use_container_width=True,
+                column_config={
+                    "Symbol": st.column_config.Column(alignment="center"),
+                    "Sector Index": st.column_config.Column(alignment="center"),
+                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
+                    "Segment": st.column_config.Column(alignment="center"),
+                    "Price Change %": st.column_config.Column(alignment="center"),
+                    "End Rel Vol": st.column_config.Column(alignment="center"),
+                    gain_col_name: st.column_config.Column(alignment="center")
+                }
+            )
+        else:
+            st.info(f"No snapshot data recorded between {selected_start_label} and {selected_end_label} yet. Keep Streamlit running during market hours to log snapshots.")
+
+# Day Gainers/Losers Tab Execution
+with tab_day:
+    st.subheader("🔥 Top Day Gainers & Losers (Sorted by Relative Volume)")
+    
+    gainers_df, losers_df = fetch_day_movers(live_df, segment_filter=selected_segment)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 🟢 Top Day Gainers")
+        if not gainers_df.empty:
+            styled_gainers = gainers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+            st.dataframe(
+                styled_gainers,
+                use_container_width=True,
+                column_config={
+                    "Symbol": st.column_config.Column(alignment="center"),
+                    "Sector Index": st.column_config.Column(alignment="center"),
+                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
+                    "Segment": st.column_config.Column(alignment="center"),
+                    "Price Change %": st.column_config.Column(alignment="center"),
+                    "Day Rel Vol": st.column_config.Column(alignment="center")
+                }
+            )
+        else:
+            st.info("No day gainers found matching current filter.")
+
+    with col2:
+        st.markdown("### 🔴 Top Day Losers")
+        if not losers_df.empty:
+            styled_losers = losers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+            st.dataframe(
+                styled_losers,
+                use_container_width=True,
+                column_config={
+                    "Symbol": st.column_config.Column(alignment="center"),
+                    "Sector Index": st.column_config.Column(alignment="center"),
+                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
+                    "Segment": st.column_config.Column(alignment="center"),
+                    "Price Change %": st.column_config.Column(alignment="center"),
+                    "Day Rel Vol": st.column_config.Column(alignment="center")
+                }
+            )
+        else:
+            st.info("No day losers found matching current filter.")
