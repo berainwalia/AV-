@@ -306,7 +306,7 @@ tab1, tab3, tab5, tab10, tab15, tab_custom = st.tabs([
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
     with tab:
-        st.subheader(f"Top 10 Gainers - Last {mins} Minute(s)")
+        st.subheader(f"Top 10 Stocks - Last {mins} Minute(s)")
         df_gain, gain_col_name = calculate_gain_relative(mins, now_str, segment_filter=selected_segment)
         
         if not df_gain.empty:
