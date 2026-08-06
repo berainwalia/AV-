@@ -1,10 +1,10 @@
-import streamlit as st
-import pandas as pd
 import sqlite3
-from datetime import datetime, timedelta, time
+from datetime import datetime, time, timedelta
+import pandas as pd
 import pytz
-from tradingview_screener import Query, Column
+import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from tradingview_screener import Column, Query
 
 # ==========================================
 # CONFIGURATION & SECTOR MAPPINGS
@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 DB_NAME = "relvol_fno_history.db"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Strict sector mapping generated directly from your attached file
+# Strict sector mapping generated directly from your target universe
 SECTOR_INDEX_MAP = {
     "360ONE": "NIFTY Fin Service",
     "ABB": "NIFTY Energy",
@@ -385,12 +385,38 @@ def calculate_gain_relative(minutes, current_time_str):
     df, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, f'+{minutes}m Gain')
     return df, label
 
-def fetch_day_movers(live_df):
+def fetch_day_movers(live_df, current_time_str):
     if live_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     df = live_df[live_df['Symbol'].isin(VALID_SYMBOLS)].copy()
+
+    # Database lookups for past relative volume snapshots
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
+
+    def get_past_relvol(mins):
+        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
+        p_row = cursor.fetchone()
+        if p_row:
+            p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
+            return dict(zip(p_df['symbol'], p_df['rel_vol']))
+        return {}
+
+    vol_1m = get_past_relvol(1)
+    vol_3m = get_past_relvol(3)
+    vol_5m = get_past_relvol(5)
+    vol_15m = get_past_relvol(15)
+    conn.close()
+
+    # Calculate gains
     df['TradingView Chart'] = df['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
+    df['+1m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), 2), axis=1)
+    df['+3m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), 2), axis=1)
+    df['+5m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), 2), axis=1)
+    df['+15m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), 2), axis=1)
 
     gainers = df.sort_values(by='ChangePct', ascending=False).head(10).copy()
     losers = df.sort_values(by='ChangePct', ascending=True).head(10).copy()
@@ -400,8 +426,8 @@ def fetch_day_movers(live_df):
             target_df['RelVol'] = target_df['RelVol'].round(2)
             target_df['ChangePct'] = target_df['ChangePct'].round(2)
 
-    cols_order = ['Symbol', 'Sector Index', 'TradingView Chart', 'ChangePct', 'RelVol']
-    col_names = ['Symbol', 'Sector Index', 'TradingView Chart', 'Price Change %', 'Relative Volume']
+    cols_order = ['Symbol', 'Sector Index', 'TradingView Chart', 'ChangePct', 'RelVol', '+1m Gain', '+3m Gain', '+5m Gain', '+15m Gain']
+    col_names = ['Symbol', 'Sector Index', 'TradingView Chart', 'Price Change %', 'Relative Volume', '+1m Gain', '+3m Gain', '+5m Gain', '+15m Gain']
 
     if not gainers.empty:
         gainers = gainers[cols_order]
@@ -421,7 +447,6 @@ def fetch_sector_wise_data(live_df, current_time_str):
     conn = sqlite3.connect(DB_NAME)
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
 
-    # Fetch latest snapshot available
     cursor = conn.cursor()
     cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (current_time_str,))
     latest_row = cursor.fetchone()
@@ -433,7 +458,6 @@ def fetch_sector_wise_data(live_df, current_time_str):
     latest_ts = latest_row[0]
     base_df = pd.read_sql_query("SELECT symbol, rel_vol, change_pct, sector_index FROM relvol_snapshots WHERE timestamp = ?", conn, params=(latest_ts,))
 
-    # Helper function to get past volume map for specified minutes
     def get_past_relvol(mins):
         past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
@@ -613,45 +637,51 @@ with tab_custom:
 with tab_day:
     st.subheader("🔥 Top Day Gainers & Losers (Selected List Only)")
     
-    gainers_df, losers_df = fetch_day_movers(live_df)
+    gainers_df, losers_df = fetch_day_movers(live_df, now_str)
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### 🟢 Top Day Gainers (% Increase)")
-        if not gainers_df.empty:
-            styled_gainers = gainers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-            st.dataframe(
-                styled_gainers,
-                use_container_width=True,
-                column_config={
-                    "Symbol": st.column_config.Column(alignment="center"),
-                    "Sector Index": st.column_config.Column(alignment="center"),
-                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                    "Price Change %": st.column_config.Column(alignment="center"),
-                    "Relative Volume": st.column_config.Column(alignment="center")
-                }
-            )
-        else:
-            st.info("No day gainers available.")
+    st.markdown("### 🟢 Top Day Gainers (% Increase)")
+    if not gainers_df.empty:
+        styled_gainers = gainers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+        st.dataframe(
+            styled_gainers,
+            use_container_width=True,
+            column_config={
+                "Symbol": st.column_config.Column(alignment="center"),
+                "Sector Index": st.column_config.Column(alignment="center"),
+                "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
+                "Price Change %": st.column_config.Column(alignment="center"),
+                "Relative Volume": st.column_config.Column(alignment="center"),
+                "+1m Gain": st.column_config.Column(alignment="center"),
+                "+3m Gain": st.column_config.Column(alignment="center"),
+                "+5m Gain": st.column_config.Column(alignment="center"),
+                "+15m Gain": st.column_config.Column(alignment="center"),
+            }
+        )
+    else:
+        st.info("No day gainers available.")
 
-    with col2:
-        st.markdown("### 🔴 Top Day Losers (% Drop)")
-        if not losers_df.empty:
-            styled_losers = losers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-            st.dataframe(
-                styled_losers,
-                use_container_width=True,
-                column_config={
-                    "Symbol": st.column_config.Column(alignment="center"),
-                    "Sector Index": st.column_config.Column(alignment="center"),
-                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                    "Price Change %": st.column_config.Column(alignment="center"),
-                    "Relative Volume": st.column_config.Column(alignment="center")
-                }
-            )
-        else:
-            st.info("No day losers available.")
+    st.markdown("---")
+
+    st.markdown("### 🔴 Top Day Losers (% Drop)")
+    if not losers_df.empty:
+        styled_losers = losers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+        st.dataframe(
+            styled_losers,
+            use_container_width=True,
+            column_config={
+                "Symbol": st.column_config.Column(alignment="center"),
+                "Sector Index": st.column_config.Column(alignment="center"),
+                "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
+                "Price Change %": st.column_config.Column(alignment="center"),
+                "Relative Volume": st.column_config.Column(alignment="center"),
+                "+1m Gain": st.column_config.Column(alignment="center"),
+                "+3m Gain": st.column_config.Column(alignment="center"),
+                "+5m Gain": st.column_config.Column(alignment="center"),
+                "+15m Gain": st.column_config.Column(alignment="center"),
+            }
+        )
+    else:
+        st.info("No day losers available.")
 
 # Sector-Wise Analysis Tab
 with tab_sector:
