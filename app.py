@@ -368,7 +368,8 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
 
-    top = merged.sort_values(by='Gain', ascending=False).head(10).copy()
+    # Updated to top 20
+    top = merged.sort_values(by='Gain', ascending=False).head(20).copy()
     top['TradingView Chart'] = top['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
 
     top = top[['symbol', 'sector_index', 'TradingView Chart', 'change_pct', 'rel_vol_end', 'Gain']].copy()
@@ -418,8 +419,9 @@ def fetch_day_movers(live_df, current_time_str):
     df['+5m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), 2), axis=1)
     df['+15m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), 2), axis=1)
 
-    gainers = df.sort_values(by='ChangePct', ascending=False).head(10).copy()
-    losers = df.sort_values(by='ChangePct', ascending=True).head(10).copy()
+    # Updated to top 20 gainers and losers
+    gainers = df.sort_values(by='ChangePct', ascending=False).head(20).copy()
+    losers = df.sort_values(by='ChangePct', ascending=True).head(20).copy()
 
     for target_df in [gainers, losers]:
         if not target_df.empty:
@@ -579,7 +581,7 @@ tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sector = st.tabs([
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
     with tab:
-        st.subheader(f"Top 10 Volume Gainers - Last {mins} Minute(s)")
+        st.subheader(f"Top 20 Volume Gainers - Last {mins} Minute(s)")
         df_gain, gain_col_name = calculate_gain_relative(mins, now_str)
         
         if not df_gain.empty:
@@ -635,11 +637,11 @@ with tab_custom:
 
 # Day Gainers / Losers Tab
 with tab_day:
-    st.subheader("🔥 Top Day Gainers & Losers (Selected List Only)")
+    st.subheader("🔥 Top 20 Day Gainers & Losers (Selected List Only)")
     
     gainers_df, losers_df = fetch_day_movers(live_df, now_str)
     
-    st.markdown("### 🟢 Top Day Gainers (% Increase)")
+    st.markdown("### 🟢 Top 20 Day Gainers (% Increase)")
     if not gainers_df.empty:
         styled_gainers = gainers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
         st.dataframe(
@@ -662,7 +664,7 @@ with tab_day:
 
     st.markdown("---")
 
-    st.markdown("### 🔴 Top Day Losers (% Drop)")
+    st.markdown("### 🔴 Top 20 Day Losers (% Drop)")
     if not losers_df.empty:
         styled_losers = losers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
         st.dataframe(
