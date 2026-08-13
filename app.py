@@ -12,7 +12,7 @@ from tradingview_screener import Column, Query
 DB_NAME = "relvol_fno_history.db"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Strict F&O sector mapping
+# Sector mapping generated for target F&O universe
 SECTOR_INDEX_MAP = {
     "360ONE": "NIFTY Fin Service",
     "ABB": "NIFTY Energy",
@@ -242,11 +242,9 @@ SECTOR_INDEX_MAP = {
     "ZYDUSLIFE": "NIFTY Healthcare",
 }
 
-FNO_SYMBOLS = set(SECTOR_INDEX_MAP.keys())
+VALID_SYMBOLS = set(SECTOR_INDEX_MAP.keys())
 
-st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
-
-# Auto-refresh every 60 seconds
+st.set_page_config(page_title="NSE Relative Volume & Sector Tracker", layout="wide")
 st_autorefresh(interval=60000, key="datarefresh")
 
 # ==========================================
@@ -306,9 +304,8 @@ def save_snapshot(df, now_str):
 # DYNAMIC SCANNER FETCHING
 # ==========================================
 @st.cache_data(ttl=300)
-def fetch_live_market_data(universe_choice):
+def fetch_live_fno_data():
     try:
-        # Fetch up to 1000 stocks from NSE
         df = (
             Query()
             .set_markets('india')
@@ -326,19 +323,12 @@ def fetch_live_market_data(universe_choice):
         df.columns = ['Symbol', 'RelVol', 'ChangePct', 'TV Sector']
         
         df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
-
-        # Apply Universe Filter
-        if universe_choice == "F&O Stocks":
-            df = df[df['Symbol'].isin(FNO_SYMBOLS)].copy()
-        else:
-            # Nifty 500 Mode: Limit to top 500 stocks
-            df = df.head(500).copy()
+        df = df[df['Symbol'].isin(VALID_SYMBOLS)].copy()
         
         df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
         df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
         
-        # Sector Mapping with fallback to TradingView's sector if stock is outside F&O map
-        df['Sector Index'] = df['Symbol'].map(SECTOR_INDEX_MAP).fillna(df['TV Sector']).fillna("Unmapped")
+        df['Sector Index'] = df['Symbol'].map(SECTOR_INDEX_MAP)
         
         return df.dropna(subset=['RelVol', 'ChangePct']).reset_index(drop=True)
 
@@ -347,9 +337,9 @@ def fetch_live_market_data(universe_choice):
         return pd.DataFrame()
 
 # ==========================================
-# CALCULATIONS & PROCESSING
+# CALCULATIONS & PROCESSING (STOCKS)
 # ==========================================
-def calculate_gain_by_exact_timestamps(start_ts, end_ts, allowed_symbols, label_name="Gain"):
+def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
@@ -373,10 +363,6 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, allowed_symbols, label_
     if df_end.empty or df_start.empty:
         return pd.DataFrame(), label_name, actual_start_ts, actual_end_ts
 
-    if allowed_symbols:
-        df_end = df_end[df_end['symbol'].isin(allowed_symbols)]
-        df_start = df_start[df_start['symbol'].isin(allowed_symbols)]
-
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
 
@@ -391,17 +377,11 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, allowed_symbols, label_
     top.columns = ['Symbol', 'Sector Index', 'TradingView Chart', 'Price Change %', 'End Rel Vol', label_name]
     return top.reset_index(drop=True), label_name, actual_start_ts, actual_end_ts
 
-def calculate_gain_relative(minutes, current_time_str, allowed_symbols):
-    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-    start_str = (curr_dt - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
-    df, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, allowed_symbols, f'+{minutes}m Gain')
-    return df, label
-
 def fetch_day_movers(live_df, current_time_str):
     if live_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    df = live_df.copy()
+    df = live_df[live_df['Symbol'].isin(VALID_SYMBOLS)].copy()
 
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -467,10 +447,6 @@ def fetch_sector_wise_data(live_df, current_time_str):
     latest_ts = latest_row[0]
     base_df = pd.read_sql_query("SELECT symbol, rel_vol, change_pct, sector_index FROM relvol_snapshots WHERE timestamp = ?", conn, params=(latest_ts,))
 
-    # Filter to current active universe
-    active_symbols = set(live_df['Symbol'].unique())
-    base_df = base_df[base_df['symbol'].isin(active_symbols)].copy()
-
     def get_past_relvol(mins):
         past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
@@ -511,215 +487,40 @@ def fetch_sector_wise_data(live_df, current_time_str):
 
     return sector_tables
 
-def style_price_change(val):
-    if isinstance(val, (int, float)):
-        if val > 0:
-            return 'color: #00c853; font-weight: bold;'
-        elif val < 0:
-            return 'color: #ff1744; font-weight: bold;'
-    return ''
-
-def generate_5min_time_options():
-    time_options = []
-    today_date = datetime.now(TIMEZONE).date()
-    start = datetime.combine(today_date, time(9, 15))
-    end = datetime.combine(today_date, time(15, 30))
-    current = start
-    while current <= end:
-        label = current.strftime('%I:%M %p')
-        time_options.append((label, current.time()))
-        current += timedelta(minutes=5)
-    return time_options
-
 # ==========================================
-# DASHBOARD INITIALIZATION & UI
+# CALCULATIONS & PROCESSING (SECTORS)
 # ==========================================
-init_db()
-
-now_dt = datetime.now(TIMEZONE)
-now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-today_date_str = now_dt.strftime("%Y-%m-%d")
-
-check_and_reset_daily(today_date_str)
-
-# Sidebar Options
-st.sidebar.header("🎯 Stock Universe")
-universe_choice = st.sidebar.radio(
-    "Select Universe Mode:",
-    options=["F&O Stocks", "Nifty 500 / All NSE"],
-    index=0
-)
-
-st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Custom Time Range")
-
-time_options = generate_5min_time_options()
-time_labels = [opt[0] for opt in time_options]
-
-selected_start_label = st.sidebar.selectbox("Select Start Time:", options=time_labels, index=0)
-start_idx = time_labels.index(selected_start_label)
-default_end_idx = min(start_idx + 1, len(time_labels) - 1)
-selected_end_label = st.sidebar.selectbox("Select End Time:", options=time_labels, index=default_end_idx)
-
-custom_start_time = next(opt[1] for opt in time_options if opt[0] == selected_start_label)
-custom_end_time = next(opt[1] for opt in time_options if opt[0] == selected_end_label)
-
-st.sidebar.markdown("---")
-if st.sidebar.button("🧹 Clear Snapshot History"):
+def fetch_sector_comparison_data(current_time_str):
+    """Calculates sector-level aggregated Relative Volume and Price Change metrics across rolling timeframes."""
     conn = sqlite3.connect(DB_NAME)
+    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
+
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM relvol_snapshots")
-    conn.commit()
+    cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (current_time_str,))
+    latest_row = cursor.fetchone()
+
+    if not latest_row:
+        conn.close()
+        return pd.DataFrame()
+
+    latest_ts = latest_row[0]
+    base_df = pd.read_sql_query("SELECT symbol, rel_vol, change_pct, sector_index FROM relvol_snapshots WHERE timestamp = ?", conn, params=(latest_ts,))
+
+    def get_past_relvol(mins):
+        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
+        p_row = cursor.fetchone()
+        if p_row:
+            p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
+            return dict(zip(p_df['symbol'], p_df['rel_vol']))
+        return {}
+
+    vol_1m = get_past_relvol(1)
+    vol_3m = get_past_relvol(3)
+    vol_5m = get_past_relvol(5)
+    vol_15m = get_past_relvol(15)
     conn.close()
-    st.sidebar.success("Database reset successful!")
-    st.rerun()
 
-# Fetch Live Data according to selected universe
-live_df = fetch_live_market_data(universe_choice)
-if not live_df.empty:
-    save_snapshot(live_df, now_str)
-
-allowed_symbols = FNO_SYMBOLS if universe_choice == "F&O Stocks" else None
-
-# Title & Status
-st.title("⚡ NSE Relative Volume & Price Movers Tracker")
-st.caption(f"Active Mode: **{universe_choice} ({len(live_df)} Stocks Loaded)** | Last updated: {now_str} IST (Auto-refreshes every 60s)")
-
-# Main Tabs
-tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sector = st.tabs([
-    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📊 Sector-Wise Analysis"
-])
-
-for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
-    with tab:
-        st.subheader(f"Top 20 Volume Gainers - Last {mins} Minute(s) ({universe_choice})")
-        df_gain, gain_col_name = calculate_gain_relative(mins, now_str, allowed_symbols)
-        
-        if not df_gain.empty:
-            styled_df = df_gain.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-            st.dataframe(
-                styled_df, 
-                use_container_width=True,
-                column_config={
-                    "Symbol": st.column_config.Column(alignment="center"),
-                    "Sector Index": st.column_config.Column(alignment="center"),
-                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                    "Price Change %": st.column_config.Column(alignment="center"),
-                    "End Rel Vol": st.column_config.Column(alignment="center"),
-                    gain_col_name: st.column_config.Column(alignment="center")
-                }
-            )
-        else:
-            st.info("Accumulating intraday snapshot data... Please wait a few moments.")
-
-# Custom Range Tab
-with tab_custom:
-    st.subheader(f"Top RelVol Gainers: {selected_start_label} ➔ {selected_end_label} ({universe_choice})")
-    
-    if custom_start_time >= custom_end_time:
-        st.warning("⚠️ Select an **End Time** strictly after the **Start Time**.")
-    else:
-        start_ts_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
-        end_ts_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
-        
-        df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(
-            start_ts_str, 
-            end_ts_str,
-            allowed_symbols,
-            label_name="Custom Window Gain"
-        )
-        
-        if not df_custom.empty:
-            st.caption(f"Data window active from `{act_start.split(' ')[1]}` to `{act_end.split(' ')[1]}`.")
-            styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-            st.dataframe(
-                styled_custom, 
-                use_container_width=True,
-                column_config={
-                    "Symbol": st.column_config.Column(alignment="center"),
-                    "Sector Index": st.column_config.Column(alignment="center"),
-                    "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                    "Price Change %": st.column_config.Column(alignment="center"),
-                    "End Rel Vol": st.column_config.Column(alignment="center"),
-                    gain_col_name: st.column_config.Column(alignment="center")
-                }
-            )
-        else:
-            st.info(f"No snapshot data recorded between {selected_start_label} and {selected_end_label} yet.")
-
-# Day Gainers / Losers Tab
-with tab_day:
-    st.subheader(f"🔥 Top 20 Day Gainers & Losers ({universe_choice})")
-    
-    gainers_df, losers_df = fetch_day_movers(live_df, now_str)
-    
-    st.markdown("### 🟢 Top 20 Day Gainers (% Increase)")
-    if not gainers_df.empty:
-        styled_gainers = gainers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-        st.dataframe(
-            styled_gainers,
-            use_container_width=True,
-            column_config={
-                "Symbol": st.column_config.Column(alignment="center"),
-                "Sector Index": st.column_config.Column(alignment="center"),
-                "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                "Price Change %": st.column_config.Column(alignment="center"),
-                "Relative Volume": st.column_config.Column(alignment="center"),
-                "+1m Gain": st.column_config.Column(alignment="center"),
-                "+3m Gain": st.column_config.Column(alignment="center"),
-                "+5m Gain": st.column_config.Column(alignment="center"),
-                "+15m Gain": st.column_config.Column(alignment="center"),
-            }
-        )
-    else:
-        st.info("No day gainers available.")
-
-    st.markdown("---")
-
-    st.markdown("### 🔴 Top 20 Day Losers (% Drop)")
-    if not losers_df.empty:
-        styled_losers = losers_df.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-        st.dataframe(
-            styled_losers,
-            use_container_width=True,
-            column_config={
-                "Symbol": st.column_config.Column(alignment="center"),
-                "Sector Index": st.column_config.Column(alignment="center"),
-                "TradingView Chart": st.column_config.LinkColumn("Chart Link", display_text="📈 Open Chart", alignment="center"),
-                "Price Change %": st.column_config.Column(alignment="center"),
-                "Relative Volume": st.column_config.Column(alignment="center"),
-                "+1m Gain": st.column_config.Column(alignment="center"),
-                "+3m Gain": st.column_config.Column(alignment="center"),
-                "+5m Gain": st.column_config.Column(alignment="center"),
-                "+15m Gain": st.column_config.Column(alignment="center"),
-            }
-        )
-    else:
-        st.info("No day losers available.")
-
-# Sector-Wise Analysis Tab
-with tab_sector:
-    st.subheader(f"📊 Sector-Wise Performance Breakdown ({universe_choice})")
-    
-    sector_tables = fetch_sector_wise_data(live_df, now_str)
-    
-    if sector_tables:
-        for sector_name, sec_df in sorted(sector_tables.items()):
-            with st.expander(f"📁 **{sector_name}** ({len(sec_df)} Stocks)", expanded=True):
-                styled_sec = sec_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'})
-                st.dataframe(
-                    styled_sec,
-                    use_container_width=True,
-                    column_config={
-                        "Stock Symbol": st.column_config.Column(alignment="center"),
-                        "Chart Link": st.column_config.LinkColumn("Chart", display_text="📈 Open Chart", alignment="center"),
-                        "Price Change (%)": st.column_config.Column(alignment="center"),
-                        "End Relative Volume (Rel Vol)": st.column_config.Column(alignment="center"),
-                        "+1m Gain": st.column_config.Column(alignment="center"),
-                        "+3m Gain": st.column_config.Column(alignment="center"),
-                        "+5m Gain": st.column_config.Column(alignment="center"),
-                        "+15m Gain": st.column_config.Column(alignment="center"),
-                    }
-                )
-    else:
-        st.info("Accumulating sector snapshot data... Please wait a few moments.")
+    base_df['+1m Gain'] = base_df.apply(lambda r: r['rel_vol'] - vol_1m.get(r['symbol'], r['rel_vol']), axis=1)
+    base_df['+3m Gain'] = base_df.apply(lambda r: r['rel_vol'] - vol_3m.get(r['symbol'], r['rel_vol']), axis=1)
+    base_df['+5m Gain'] = base_df.apply(lambda r: r['rel_vol'] - vol_5m.get(r['symbol'], r['rel_vol']), ax
