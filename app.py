@@ -12,7 +12,7 @@ from tradingview_screener import Column, Query
 DB_NAME = "relvol_fno_history.db"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Sector mapping generated for target F&O universe
+# Strict sector mapping generated directly from your target universe
 SECTOR_INDEX_MAP = {
     "360ONE": "NIFTY Fin Service",
     "ABB": "NIFTY Energy",
@@ -245,7 +245,10 @@ SECTOR_INDEX_MAP = {
 VALID_SYMBOLS = set(SECTOR_INDEX_MAP.keys())
 
 st.set_page_config(page_title="NSE Relative Volume & Sector Tracker", layout="wide")
+
+# Auto-refresh every 60 seconds
 st_autorefresh(interval=60000, key="datarefresh")
+
 
 # ==========================================
 # DATABASE FUNCTIONS
@@ -272,6 +275,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def check_and_reset_daily(today_date_str):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -283,6 +287,7 @@ def check_and_reset_daily(today_date_str):
         cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('last_reset_date', ?)", (today_date_str,))
         conn.commit()
     conn.close()
+
 
 def save_snapshot(df, now_str):
     if df.empty:
@@ -299,6 +304,7 @@ def save_snapshot(df, now_str):
     """, data)
     conn.commit()
     conn.close()
+
 
 # ==========================================
 # DYNAMIC SCANNER FETCHING
@@ -335,6 +341,7 @@ def fetch_live_fno_data():
     except Exception as e:
         st.error(f"Error pulling stock updates: {e}")
         return pd.DataFrame()
+
 
 # ==========================================
 # CALCULATIONS & PROCESSING (STOCKS)
@@ -376,6 +383,14 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
 
     top.columns = ['Symbol', 'Sector Index', 'TradingView Chart', 'Price Change %', 'End Rel Vol', label_name]
     return top.reset_index(drop=True), label_name, actual_start_ts, actual_end_ts
+
+
+def calculate_gain_relative(minutes, current_time_str):
+    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
+    start_str = (curr_dt - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+    df, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, f'+{minutes}m Gain')
+    return df, label
+
 
 def fetch_day_movers(live_df, current_time_str):
     if live_df.empty:
@@ -429,7 +444,9 @@ def fetch_day_movers(live_df, current_time_str):
 
     return gainers.reset_index(drop=True), losers.reset_index(drop=True)
 
+
 def fetch_sector_wise_data(live_df, current_time_str):
+    """Calculates +1m, +3m, +5m, and +15m RelVol gains for all stocks and groups them by sector."""
     if live_df.empty:
         return {}
 
@@ -486,6 +503,7 @@ def fetch_sector_wise_data(live_df, current_time_str):
         sector_tables[sector] = group[cols].sort_values(by='Price Change (%)', ascending=False).reset_index(drop=True)
 
     return sector_tables
+
 
 # ==========================================
 # CALCULATIONS & PROCESSING (SECTORS)
@@ -550,6 +568,7 @@ def fetch_sector_comparison_data(current_time_str):
 
     return sector_summary.sort_values(by='Avg Price Change %', ascending=False).reset_index(drop=True)
 
+
 def calculate_sector_gain_by_exact_timestamps(start_ts, end_ts, label_name="Sector Rel Vol Gain"):
     """Calculates sector performance between two specific historical timestamps."""
     conn = sqlite3.connect(DB_NAME)
@@ -589,6 +608,7 @@ def calculate_sector_gain_by_exact_timestamps(start_ts, end_ts, label_name="Sect
     sector_df.columns = ['Sector Index', 'Stock Count', 'Avg Price Change %', 'Avg End Rel Vol', label_name]
     return sector_df.sort_values(by=label_name, ascending=False).reset_index(drop=True), label_name
 
+
 # ==========================================
 # UTILITY FUNCTIONS
 # ==========================================
@@ -599,6 +619,7 @@ def style_price_change(val):
         elif val < 0:
             return 'color: #ff1744; font-weight: bold;'
     return ''
+
 
 def generate_5min_time_options():
     time_options = []
@@ -613,6 +634,7 @@ def generate_5min_time_options():
         time_options.append((label, current.time()))
         current += timedelta(minutes=5)
     return time_options
+
 
 # ==========================================
 # MAIN APPLICATION WORKFLOW
@@ -736,6 +758,7 @@ def main():
                 st.dataframe(top_stocks.style.map(style_price_change, subset=['Price Change %']), use_container_width=True)
             else:
                 st.warning("No stock snapshots available for selected timestamps.")
+
 
 if __name__ == "__main__":
     main()
