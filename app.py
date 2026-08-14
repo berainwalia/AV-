@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 DB_NAME = "relvol_fno_history.db"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Strict sector mapping generated directly from your list
+# Predefined Sector Mapping
 SECTOR_INDEX_MAP = {
     "360ONE": "NIFTY Fin Service",
     "ABB": "NIFTY Energy",
@@ -306,13 +306,16 @@ def save_snapshot(df, now_str):
 # DYNAMIC SCANNER FETCHING
 # ==========================================
 @st.cache_data(ttl=300)
-def fetch_live_fno_data():
+def fetch_live_fno_data(stock_universe_mode="Custom List"):
     try:
+        # Determine query limit based on selected mode
+        limit = 200 if stock_universe_mode == "Custom List" else (250 if stock_universe_mode == "All F&O Stocks" else 500)
+        
         df = (
             Query()
             .set_markets('india')
             .select('name', 'relative_volume_10d_calc', 'change', 'sector')
-            .limit(1000)
+            .limit(limit)
             .get_scanner_data()
         )
         if isinstance(df, tuple):
@@ -325,12 +328,16 @@ def fetch_live_fno_data():
         df.columns = ['Symbol', 'RelVol', 'ChangePct', 'TV Sector']
         
         df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
-        df = df[df['Symbol'].isin(VALID_SYMBOLS)].copy()
+        
+        # Filter symbols dynamically according to the user selection
+        if stock_universe_mode == "Custom List":
+            df = df[df['Symbol'].isin(VALID_SYMBOLS)].copy()
         
         df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
         df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
         
-        df['Sector Index'] = df['Symbol'].map(SECTOR_INDEX_MAP)
+        # Sector Mapping with TradingView Fallback
+        df['Sector Index'] = df['Symbol'].map(SECTOR_INDEX_MAP).fillna(df['TV Sector'].fillna("Other Sector"))
         
         return df.dropna(subset=['RelVol', 'ChangePct']).reset_index(drop=True)
 
@@ -410,7 +417,7 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     vol_15m = get_past_relvol(15)
     conn.close()
 
-    df = live_df[live_df['Symbol'].isin(VALID_SYMBOLS)].copy()
+    df = live_df.copy()
     df['TradingView Chart'] = df['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
 
     df['+1m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), 2), axis=1)
@@ -536,14 +543,15 @@ today_date_str = now_dt.strftime("%Y-%m-%d")
 
 check_and_reset_daily(today_date_str)
 
-live_df = fetch_live_fno_data()
-if not live_df.empty:
-    save_snapshot(live_df, now_str)
-
-st.title("⚡ NSE Selected Stocks Relative Volume & Price Movers")
-st.caption(f"Showing **Selected Stocks List Only ({len(VALID_SYMBOLS)} Stocks)** | Last updated: {now_str} IST (Auto-refreshes every 60 seconds)")
-
 # Sidebar Configuration
+st.sidebar.header("📌 Stock Universe Selection")
+stock_universe_mode = st.sidebar.selectbox(
+    "Choose Stock Universe:",
+    options=["Custom List", "All F&O Stocks", "NIFTY 500 / All NSE Stocks"],
+    index=0
+)
+
+st.sidebar.markdown("---")
 st.sidebar.header("⚙️ Custom Time Range")
 
 time_options = generate_5min_time_options()
@@ -576,6 +584,14 @@ if st.sidebar.button("🧹 Clear Snapshot History"):
     conn.close()
     st.sidebar.success("Database reset successful!")
     st.rerun()
+
+# Fetch Dynamic Screener Data
+live_df = fetch_live_fno_data(stock_universe_mode)
+if not live_df.empty:
+    save_snapshot(live_df, now_str)
+
+st.title("⚡ NSE Relative Volume & Price Movers")
+st.caption(f"Active Stock Universe: **{stock_universe_mode} ({len(live_df)} Active Tickers)** | Last updated: {now_str} IST (Auto-refreshes every 60s)")
 
 # Timeframe Tabs
 tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sector = st.tabs([
