@@ -6,6 +6,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from tradingview_screener import Column, Query
 
+
 # ==========================================
 # CONFIGURATION & SECTOR MAPPINGS
 # ==========================================
@@ -249,6 +250,7 @@ st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
 # Auto-refresh every 60 seconds
 st_autorefresh(interval=60000, key="datarefresh")
 
+
 # ==========================================
 # DATABASE FUNCTIONS
 # ==========================================
@@ -274,6 +276,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def check_and_reset_daily(today_date_str):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -285,6 +288,7 @@ def check_and_reset_daily(today_date_str):
         cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('last_reset_date', ?)", (today_date_str,))
         conn.commit()
     conn.close()
+
 
 def save_snapshot(df, now_str):
     if df.empty:
@@ -301,6 +305,7 @@ def save_snapshot(df, now_str):
     """, data)
     conn.commit()
     conn.close()
+
 
 # ==========================================
 # DYNAMIC SCANNER FETCHING
@@ -338,6 +343,7 @@ def fetch_live_fno_data():
         st.error(f"Error pulling stock updates: {e}")
         return pd.DataFrame()
 
+
 # ==========================================
 # CALCULATIONS & PROCESSING
 # ==========================================
@@ -368,7 +374,6 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
 
-    # Updated to top 20
     top = merged.sort_values(by='Gain', ascending=False).head(20).copy()
     top['TradingView Chart'] = top['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
 
@@ -380,11 +385,13 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
     top.columns = ['Symbol', 'Sector Index', 'TradingView Chart', 'Price Change %', 'End Rel Vol', label_name]
     return top.reset_index(drop=True), label_name, actual_start_ts, actual_end_ts
 
+
 def calculate_gain_relative(minutes, current_time_str):
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
     start_str = (curr_dt - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
     df, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, f'+{minutes}m Gain')
     return df, label
+
 
 def fetch_day_movers(live_df, current_time_str):
     if live_df.empty:
@@ -392,7 +399,6 @@ def fetch_day_movers(live_df, current_time_str):
 
     df = live_df[live_df['Symbol'].isin(VALID_SYMBOLS)].copy()
 
-    # Database lookups for past relative volume snapshots
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
@@ -412,14 +418,12 @@ def fetch_day_movers(live_df, current_time_str):
     vol_15m = get_past_relvol(15)
     conn.close()
 
-    # Calculate gains
     df['TradingView Chart'] = df['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
     df['+1m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), 2), axis=1)
     df['+3m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), 2), axis=1)
     df['+5m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), 2), axis=1)
     df['+15m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), 2), axis=1)
 
-    # Updated to top 20 gainers and losers
     gainers = df.sort_values(by='ChangePct', ascending=False).head(20).copy()
     losers = df.sort_values(by='ChangePct', ascending=True).head(20).copy()
 
@@ -441,8 +445,8 @@ def fetch_day_movers(live_df, current_time_str):
 
     return gainers.reset_index(drop=True), losers.reset_index(drop=True)
 
+
 def fetch_sector_wise_data(live_df, current_time_str):
-    """Calculates +1m, +3m, +5m, and +15m RelVol gains for all stocks and groups them by sector."""
     if live_df.empty:
         return {}
 
@@ -500,6 +504,7 @@ def fetch_sector_wise_data(live_df, current_time_str):
 
     return sector_tables
 
+
 def style_price_change(val):
     if isinstance(val, (int, float)):
         if val > 0:
@@ -507,6 +512,7 @@ def style_price_change(val):
         elif val < 0:
             return 'color: #ff1744; font-weight: bold;'
     return ''
+
 
 def generate_5min_time_options():
     time_options = []
@@ -522,4 +528,126 @@ def generate_5min_time_options():
         current += timedelta(minutes=5)
     return time_options
 
-# ===================================
+
+# ==========================================
+# MAIN STREAMLIT APPLICATION EXECUTION
+# ==========================================
+init_db()
+
+now_kolkata = datetime.now(TIMEZONE)
+today_str = now_kolkata.strftime("%Y-%m-%d")
+now_str = now_kolkata.strftime("%Y-%m-%d %H:%M:%S")
+
+check_and_reset_daily(today_str)
+
+st.title("📊 NSE Relative Volume & F&O Tracker")
+st.caption(f"Last Refreshed (IST): **{now_str}**")
+
+# Fetch and store live snapshot
+live_df = fetch_live_fno_data()
+if not live_df.empty:
+    save_snapshot(live_df, now_str)
+else:
+    st.warning("Unable to retrieve live market data or market is currently offline.")
+
+# Navigation Tabs
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔥 Day Movers", 
+    "⏱️ RelVol Lookback Gainers", 
+    "🎯 Custom Time Comparison", 
+    "🏢 Sector Breakdown"
+])
+
+link_config = {
+    "TradingView Chart": st.column_config.LinkColumn("Chart", display_text="Open Chart"),
+    "Chart Link": st.column_config.LinkColumn("Chart", display_text="Open Chart")
+}
+
+# --- TAB 1: DAY MOVERS ---
+with tab1:
+    st.subheader("Top Price Gainers & Losers with RelVol Momentum")
+    gainers_df, losers_df = fetch_day_movers(live_df, now_str)
+    
+    col_g, col_l = st.columns(2)
+    with col_g:
+        st.markdown("### 🟢 Top 20 Gainers")
+        if not gainers_df.empty:
+            st.dataframe(
+                gainers_df.style.map(style_price_change, subset=['Price Change %']),
+                column_config=link_config,
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No gainer data available yet.")
+            
+    with col_l:
+        st.markdown("### 🔴 Top 20 Losers")
+        if not losers_df.empty:
+            st.dataframe(
+                losers_df.style.map(style_price_change, subset=['Price Change %']),
+                column_config=link_config,
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No loser data available yet.")
+
+# --- TAB 2: RELATIVE LOOKBACK ---
+with tab2:
+    st.subheader("Volume Surge Lookback Analysis")
+    selected_tf = st.selectbox("Select Lookback Minutes", [1, 3, 5, 15], index=2, format_func=lambda x: f"Last {x} Minutes")
+    
+    rel_gain_df, _ = calculate_gain_relative(selected_tf, now_str)
+    if not rel_gain_df.empty:
+        st.dataframe(
+            rel_gain_df.style.map(style_price_change, subset=['Price Change %']),
+            column_config=link_config,
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("Gathering historical snapshots. Please allow a few minutes for interval calculation.")
+
+# --- TAB 3: CUSTOM TIME COMPARISON ---
+with tab3:
+    st.subheader("Compare Volume Spike Between Selected Times")
+    time_options = generate_5min_time_options()
+    
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        start_label, start_time_val = st.selectbox("Start Time", time_options, index=0, key="start_t")
+    with col_t2:
+        end_label, end_time_val = st.selectbox("End Time", time_options, index=len(time_options)-1, key="end_t")
+        
+    start_ts_str = f"{today_str} {start_time_val.strftime('%H:%M:%S')}"
+    end_ts_str = f"{today_str} {end_time_val.strftime('%H:%M:%S')}"
+    
+    if st.button("Calculate RelVol Gain", type="primary"):
+        custom_df, label, act_start, act_end = calculate_gain_by_exact_timestamps(start_ts_str, end_ts_str, "Volume Gain")
+        if not custom_df.empty:
+            st.caption(f"Comparing nearest recorded timestamps: **{act_start}** ➔ **{act_end}**")
+            st.dataframe(
+                custom_df.style.map(style_price_change, subset=['Price Change %']),
+                column_config=link_config,
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.warning("No records found in database for the chosen timeframe.")
+
+# --- TAB 4: SECTOR VIEW ---
+with tab4:
+    st.subheader("Sector Breakdown")
+    sector_map = fetch_sector_wise_data(live_df, now_str)
+    if sector_map:
+        selected_sector = st.selectbox("Select Sector Index", list(sector_map.keys()))
+        if selected_sector:
+            st.dataframe(
+                sector_map[selected_sector].style.map(style_price_change, subset=['Price Change (%)']),
+                column_config=link_config,
+                use_container_width=True,
+                hide_index=True
+            )
+    else:
+        st.info("No sector data calculated yet.")
