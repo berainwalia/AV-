@@ -200,17 +200,14 @@ def auto_snapshot_loop():
     while True:
         try:
             now_dt = datetime.now(TIMEZONE)
-            # Market days: Monday (0) to Friday (4)
             if now_dt.weekday() < 5:
                 curr_time = now_dt.time()
-                # NSE Market Hours: 09:15 AM to 03:30 PM IST
                 if time(9, 15) <= curr_time <= time(15, 30):
                     now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                     today_date_str = now_dt.strftime("%Y-%m-%d")
                     
                     check_and_reset_daily(today_date_str)
                     
-                    # Fetch and save live background snapshot
                     df = fetch_live_fno_data("All F&O Stocks")
                     if not df.empty:
                         save_snapshot(df, now_str)
@@ -219,7 +216,6 @@ def auto_snapshot_loop():
             
         time_module.sleep(60)
 
-# Initialize DB & Start Background Worker Thread (Only Once)
 init_db()
 
 if "bg_thread_started" not in st.session_state:
@@ -257,7 +253,6 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
 
-    # Display Top 20 Stocks
     top = merged.sort_values(by='Gain', ascending=False).head(20).copy()
     top['TradingView Chart'] = top['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
 
@@ -311,7 +306,6 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     df['RelVol'] = df['RelVol'].round(2)
     df['ChangePct'] = df['ChangePct'].round(2)
 
-    # Display Top 20 Gainers & Losers
     gainers = df.sort_values(by='ChangePct', ascending=False).head(20).copy()
     losers = df.sort_values(by='ChangePct', ascending=True).head(20).copy()
 
@@ -333,6 +327,72 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
         losers.columns = col_names
 
     return gainers.reset_index(drop=True), losers.reset_index(drop=True)
+
+# ==========================================
+# NEW: SECTOR MAPPING & HEATMAP FUNCTIONALITY
+# ==========================================
+def fetch_sector_momentum_summary(live_df, current_time_str):
+    if live_df.empty:
+        return pd.DataFrame()
+
+    conn = sqlite3.connect(DB_NAME)
+    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
+    cursor = conn.cursor()
+
+    def get_past_relvol(mins):
+        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
+        p_row = cursor.fetchone()
+        if p_row:
+            p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
+            return dict(zip(p_df['symbol'], p_df['rel_vol']))
+        return {}
+
+    vol_1m = get_past_relvol(1)
+    vol_3m = get_past_relvol(3)
+    vol_5m = get_past_relvol(5)
+    vol_15m = get_past_relvol(15)
+    conn.close()
+
+    df = live_df.copy()
+    df['+1m Gain'] = df.apply(lambda r: r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), axis=1)
+    df['+3m Gain'] = df.apply(lambda r: r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), axis=1)
+    df['+5m Gain'] = df.apply(lambda r: r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), axis=1)
+    df['+15m Gain'] = df.apply(lambda r: r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), axis=1)
+    df['Is Advance'] = df['ChangePct'] > 0
+
+    # Sector-level Grouping & Summary Aggregation
+    sector_summary = df.groupby('Sector Index').agg(
+        Total_Stocks=('Symbol', 'count'),
+        Advancing_Stocks=('Is Advance', 'sum'),
+        Avg_Price_Change=('ChangePct', 'mean'),
+        Avg_Rel_Vol=('RelVol', 'mean'),
+        Avg_1m_Gain=('+1m Gain', 'mean'),
+        Avg_3m_Gain=('+3m Gain', 'mean'),
+        Avg_5m_Gain=('+5m Gain', 'mean'),
+        Avg_15m_Gain=('+15m Gain', 'mean')
+    ).reset_index()
+
+    sector_summary['Declining_Stocks'] = sector_summary['Total_Stocks'] - sector_summary['Advancing_Stocks']
+    sector_summary['Breadth Ratio (A/D)'] = sector_summary.apply(
+        lambda r: f"{int(r['Advancing_Stocks'])} : {int(r['Declining_Stocks'])}", axis=1
+    )
+
+    # Formatting and rounding
+    sector_summary['Avg Price Change (%)'] = sector_summary['Avg_Price_Change'].round(2)
+    sector_summary['Avg Rel Vol'] = sector_summary['Avg_Rel_Vol'].round(2)
+    sector_summary['+1m Vol Gain'] = sector_summary['Avg_1m_Gain'].round(2)
+    sector_summary['+3m Vol Gain'] = sector_summary['Avg_3m_Gain'].round(2)
+    sector_summary['+5m Vol Gain'] = sector_summary['Avg_5m_Gain'].round(2)
+    sector_summary['+15m Vol Gain'] = sector_summary['Avg_15m_Gain'].round(2)
+
+    sector_summary = sector_summary.sort_values(by='Avg Price Change (%)', ascending=False)
+
+    cols = [
+        'Sector Index', 'Total_Stocks', 'Breadth Ratio (A/D)', 'Avg Price Change (%)', 
+        'Avg Rel Vol', '+1m Vol Gain', '+3m Vol Gain', '+5m Vol Gain', '+15m Vol Gain'
+    ]
+    return sector_summary[cols].reset_index(drop=True)
 
 def fetch_sector_wise_data(live_df, current_time_str):
     if live_df.empty:
@@ -469,10 +529,37 @@ live_df = fetch_live_fno_data(stock_universe_mode)
 st.title("⚡ NSE Relative Volume & Price Movers")
 st.caption(f"Active Universe: **{stock_universe_mode} ({len(live_df)} Tickers)** | Background Worker Status: 🟢 **Active (1m Auto-Snapshots)** | Last refreshed: {now_str} IST")
 
-# Timeframe Tabs
-tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sector = st.tabs([
-    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📊 Sector-Wise Analysis"
+# Timeframe & Analysis Tabs
+tab_sector_leaderboard, tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sector_stocks = st.tabs([
+    "🏛️ Sector Momentum", "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📊 Sector Stock Drilldown"
 ])
+
+# Sector Momentum Leaderboard Tab
+with tab_sector_leaderboard:
+    st.subheader("🏛️ Sector & Thematic Momentum Summary")
+    st.caption("Compare leading and lagging sectors across timeframes (+1m, +3m, +5m, +15m, and Daily % Change).")
+    
+    sector_summary_df = fetch_sector_momentum_summary(live_df, now_str)
+    
+    if not sector_summary_df.empty:
+        styled_sec_summary = sector_summary_df.style.map(style_price_change, subset=['Avg Price Change (%)']).format({'Avg Price Change (%)': '{:+.2f}%'})
+        st.dataframe(
+            styled_sec_summary,
+            use_container_width=True,
+            column_config={
+                "Sector Index": st.column_config.Column(alignment="center"),
+                "Total_Stocks": st.column_config.Column("Total Stocks", alignment="center"),
+                "Breadth Ratio (A/D)": st.column_config.Column("Breadth (Advances : Declines)", alignment="center"),
+                "Avg Price Change (%)": st.column_config.Column(alignment="center"),
+                "Avg Rel Vol": st.column_config.Column(alignment="center"),
+                "+1m Vol Gain": st.column_config.Column(alignment="center"),
+                "+3m Vol Gain": st.column_config.Column(alignment="center"),
+                "+5m Vol Gain": st.column_config.Column(alignment="center"),
+                "+15m Vol Gain": st.column_config.Column(alignment="center"),
+            }
+        )
+    else:
+        st.info("Accumulating sector snapshot data... Please wait a few moments.")
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
     with tab:
@@ -581,9 +668,9 @@ with tab_day:
     else:
         st.info("No day losers available.")
 
-# Sector-Wise Analysis Tab
-with tab_sector:
-    st.subheader("📊 Sector-Wise Performance Breakdown")
+# Sector Stock Drilldown Tab
+with tab_sector_stocks:
+    st.subheader("📊 Individual Sector Stock Breakdown")
     
     sector_tables = fetch_sector_wise_data(live_df, now_str)
     
