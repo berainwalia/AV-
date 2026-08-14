@@ -94,17 +94,14 @@ FNO_SECTOR_MAP = {
 
 st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
 
-# Custom CSS to FORCE horizontal scrollbars on tables and optimize row display
+# Custom CSS for compact table columns & eliminating horizontal scrolling
 st.markdown("""
     <style>
-    /* Force table containers to allow horizontal scroll */
-    [data-testid="stDataFrame"], [data-testid="stTable"] {
-        overflow-x: auto !important;
-        white-space: nowrap !important;
-    }
     .stDataFrame table {
-        font-size: 13px !important;
-        min-width: 800px; /* Ensures scrollbar triggers on narrow views */
+        font-size: 12px !important;
+    }
+    div[data-testid="stTable"] {
+        width: 100% !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -235,8 +232,7 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
 
-    # Changed from 10 to 20 stocks
-    top = merged.sort_values(by='Gain', ascending=False).head(20).copy()
+    top = merged.sort_values(by='Gain', ascending=False).head(10).copy()
     top['TradingView Chart'] = top['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
 
     top = top[['symbol', 'sector_index', 'TradingView Chart', 'change_pct', 'rel_vol_end', 'Gain']].copy()
@@ -293,9 +289,8 @@ def fetch_day_movers_with_tf_comparison(live_df, current_time_str):
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    # Changed from 10 to 20 stocks for both Gainers and Losers
-    gainers = df.sort_values(by='ChangePct', ascending=False).head(20).copy()
-    losers = df.sort_values(by='ChangePct', ascending=True).head(20).copy()
+    gainers = df.sort_values(by='ChangePct', ascending=False).head(10).copy()
+    losers = df.sort_values(by='ChangePct', ascending=True).head(10).copy()
 
     cols_order = ['Symbol', 'TradingView Chart', 'ChangePct', 'RelVol', '+1m', '+3m', '+5m', '+10m', '+15m']
     col_names = ['Symbol', 'Chart', 'Chg %', 'RVol', '+1m', '+3m', '+5m', '+10m', '+15m']
@@ -399,7 +394,7 @@ tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sector = st.tabs([
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
     with tab:
-        st.subheader(f"Top 20 Volume Gainers - Last {mins} Minute(s)")
+        st.subheader(f"Top 10 Volume Gainers - Last {mins} Minute(s)")
         df_rel, label_name = calculate_gain_relative(mins, now_str)
         if not df_rel.empty:
             st.dataframe(
@@ -411,7 +406,7 @@ for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
             st.info("Accumulating minute snapshot data for this interval...")
 
 with tab_custom:
-    st.subheader("Top 20 Volume Gainers - Custom Time Window")
+    st.subheader("Top Volume Gainers - Custom Time Window")
     start_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
     end_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
     
@@ -426,58 +421,54 @@ with tab_custom:
     else:
         st.info("No snapshots recorded for the selected custom timeframe yet.")
 
-# ==========================================
-# TOP GAINERS (TOP) & LOSERS (BOTTOM) STACKED TAB
-# ==========================================
 with tab_day:
     st.subheader("Day's Top Price Gainers & Losers with Multi-Timeframe Volume Gains")
     gainers, losers = fetch_day_movers_with_tf_comparison(live_df, now_str)
     
-    # 🟢 Top Gainers Section (Lies Above)
-    st.markdown("### 🟢 Top 20 Price Gainers")
-    if not gainers.empty:
-        st.dataframe(
-            gainers.style.map(style_price_change, subset=['Chg %']),
-            column_config={
-                "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
-                "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-                "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
-                "RVol": st.column_config.NumberColumn("RVol", width="small"),
-                "+1m": st.column_config.NumberColumn("+1m", width="small"),
-                "+3m": st.column_config.NumberColumn("+3m", width="small"),
-                "+5m": st.column_config.NumberColumn("+5m", width="small"),
-                "+10m": st.column_config.NumberColumn("+10m", width="small"),
-                "+15m": st.column_config.NumberColumn("+15m", width="small"),
-            },
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info("No data available for top gainers.")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 🟢 Top 10 Price Gainers")
+        if not gainers.empty:
+            st.dataframe(
+                gainers.style.map(style_price_change, subset=['Chg %']),
+                column_config={
+                    "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
+                    "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
+                    "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
+                    "RVol": st.column_config.NumberColumn("RVol", width="small"),
+                    "+1m": st.column_config.NumberColumn("+1m", width="small"),
+                    "+3m": st.column_config.NumberColumn("+3m", width="small"),
+                    "+5m": st.column_config.NumberColumn("+5m", width="small"),
+                    "+10m": st.column_config.NumberColumn("+10m", width="small"),
+                    "+15m": st.column_config.NumberColumn("+15m", width="small"),
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No data available.")
 
-    st.markdown("---")
-
-    # 🔴 Top Losers Section (Lies Below)
-    st.markdown("### 🔴 Top 20 Price Losers")
-    if not losers.empty:
-        st.dataframe(
-            losers.style.map(style_price_change, subset=['Chg %']),
-            column_config={
-                "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
-                "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-                "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
-                "RVol": st.column_config.NumberColumn("RVol", width="small"),
-                "+1m": st.column_config.NumberColumn("+1m", width="small"),
-                "+3m": st.column_config.NumberColumn("+3m", width="small"),
-                "+5m": st.column_config.NumberColumn("+5m", width="small"),
-                "+10m": st.column_config.NumberColumn("+10m", width="small"),
-                "+15m": st.column_config.NumberColumn("+15m", width="small"),
-            },
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info("No data available for top losers.")
+    with col2:
+        st.markdown("### 🔴 Top 10 Price Losers")
+        if not losers.empty:
+            st.dataframe(
+                losers.style.map(style_price_change, subset=['Chg %']),
+                column_config={
+                    "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
+                    "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
+                    "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
+                    "RVol": st.column_config.NumberColumn("RVol", width="small"),
+                    "+1m": st.column_config.NumberColumn("+1m", width="small"),
+                    "+3m": st.column_config.NumberColumn("+3m", width="small"),
+                    "+5m": st.column_config.NumberColumn("+5m", width="small"),
+                    "+10m": st.column_config.NumberColumn("+10m", width="small"),
+                    "+15m": st.column_config.NumberColumn("+15m", width="small"),
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No data available.")
 
 # ==========================================
 # SECTOR-WISE RELVOL COMPARISON TAB
