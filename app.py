@@ -3,7 +3,7 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta, time
 import pytz
-from tradingview_screener import Query, col
+from tradingview_screener import Query
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 DB_NAME = "relvol_fno_history.db"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Master F&O list mapping (used as fallback or strict filter when F&O is selected)
+# Master F&O list mapping (223 Stocks)
 FNO_SECTOR_MAP = {
     "360ONE": "NIFTY Fin Service", "ABB": "NIFTY Energy", "ABBOTINDIA": "NIFTY Pharma",
     "ABCAPITAL": "NIFTY Fin Service", "ABSLAMC": "NIFTY Fin Service", "ADANIENSOL": "NIFTY Energy",
@@ -94,7 +94,19 @@ FNO_SECTOR_MAP = {
 
 st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
 
-# Auto-refresh every 60 seconds
+# Custom CSS for compact table columns & eliminating horizontal scrolling
+st.markdown("""
+    <style>
+    .stDataFrame table {
+        font-size: 12px !important;
+    }
+    div[data-testid="stTable"] {
+        width: 100% !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Auto-refresh app every 60 seconds (60,000 ms)
 st_autorefresh(interval=60000, key="datarefresh")
 
 # ==========================================
@@ -151,18 +163,15 @@ def save_snapshot(df, now_str):
     conn.close()
 
 # ==========================================
-# DYNAMIC SCANNER FETCHING
+# AUTOMATED DYNAMIC DATA FETCHING
 # ==========================================
-@st.cache_data(ttl=300)
 def fetch_live_fno_data(universe_type="FnO"):
     try:
         q = Query().set_markets('india').select('name', 'relative_volume_10d_calc', 'change', 'sector')
         
         if universe_type == "FnO":
-            # Filter specifically for F&O stocks
-            q = q.limit(300)
+            q = q.limit(400)
         else:
-            # Fetch top 500 stocks dynamically by market cap
             q = q.order_by('market_cap_basic', ascending=False).limit(500)
             
         df = q.get_scanner_data()
@@ -182,7 +191,6 @@ def fetch_live_fno_data(universe_type="FnO"):
             df = df[df['Symbol'].isin(valid_symbols)].copy()
             df['Sector Index'] = df['Symbol'].map(FNO_SECTOR_MAP)
         else:
-            # Map known FNO sectors or format TV sector fallback
             df['Sector Index'] = df['Symbol'].map(FNO_SECTOR_MAP).fillna(df['TV Sector'].fillna("Other"))
 
         df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
@@ -242,7 +250,6 @@ def calculate_gain_relative(minutes, current_time_str):
     return df, label
 
 def fetch_day_movers_with_tf_comparison(live_df, current_time_str):
-    """Calculates top price gainers/losers and includes +1m, +3m, +5m, +10m, +15m RelVol gains."""
     if live_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -250,7 +257,6 @@ def fetch_day_movers_with_tf_comparison(live_df, current_time_str):
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
     cursor = conn.cursor()
 
-    # Helper function to get past volume map for specified minutes
     def get_past_relvol(mins):
         past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
@@ -270,22 +276,17 @@ def fetch_day_movers_with_tf_comparison(live_df, current_time_str):
     df = live_df.copy()
     df['TradingView Chart'] = df['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
     
-    df['+1m Vol Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-    df['+3m Vol Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-    df['+5m Vol Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-    df['+10m Vol Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_10m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-    df['+15m Vol Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), 2), axis=1)
+    df['+1m'] = df.apply(lambda r: round(r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), 2), axis=1)
+    df['+3m'] = df.apply(lambda r: round(r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), 2), axis=1)
+    df['+5m'] = df.apply(lambda r: round(r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), 2), axis=1)
+    df['+10m'] = df.apply(lambda r: round(r['RelVol'] - vol_10m.get(r['Symbol'], r['RelVol']), 2), axis=1)
+    df['+15m'] = df.apply(lambda r: round(r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), 2), axis=1)
 
     gainers = df.sort_values(by='ChangePct', ascending=False).head(10).copy()
     losers = df.sort_values(by='ChangePct', ascending=True).head(10).copy()
 
-    for target_df in [gainers, losers]:
-        if not target_df.empty:
-            target_df['RelVol'] = target_df['RelVol'].round(2)
-            target_df['ChangePct'] = target_df['ChangePct'].round(2)
-
-    cols_order = ['Symbol', 'Sector Index', 'TradingView Chart', 'ChangePct', 'RelVol', '+1m Vol Gain', '+3m Vol Gain', '+5m Vol Gain', '+10m Vol Gain', '+15m Vol Gain']
-    col_names = ['Symbol', 'Sector Index', 'TradingView Chart', 'Price Change %', 'Rel Vol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain']
+    cols_order = ['Symbol', 'TradingView Chart', 'ChangePct', 'RelVol', '+1m', '+3m', '+5m', '+10m', '+15m']
+    col_names = ['Symbol', 'Chart', 'Chg %', 'RVol', '+1m', '+3m', '+5m', '+10m', '+15m']
 
     if not gainers.empty:
         gainers = gainers[cols_order]
@@ -296,65 +297,6 @@ def fetch_day_movers_with_tf_comparison(live_df, current_time_str):
         losers.columns = col_names
 
     return gainers.reset_index(drop=True), losers.reset_index(drop=True)
-
-def fetch_sector_wise_data(live_df, current_time_str):
-    """Calculates +1m, +3m, +5m, and +15m RelVol gains for all stocks and groups them by sector."""
-    if live_df.empty:
-        return {}
-
-    conn = sqlite3.connect(DB_NAME)
-    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-
-    cursor = conn.cursor()
-    cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (current_time_str,))
-    latest_row = cursor.fetchone()
-
-    if not latest_row:
-        conn.close()
-        return {}
-
-    latest_ts = latest_row[0]
-    base_df = pd.read_sql_query("SELECT symbol, rel_vol, change_pct, sector_index FROM relvol_snapshots WHERE timestamp = ?", conn, params=(latest_ts,))
-
-    def get_past_relvol(mins):
-        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
-        p_row = cursor.fetchone()
-        if p_row:
-            p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
-            return dict(zip(p_df['symbol'], p_df['rel_vol']))
-        return {}
-
-    vol_1m = get_past_relvol(1)
-    vol_3m = get_past_relvol(3)
-    vol_5m = get_past_relvol(5)
-    vol_15m = get_past_relvol(15)
-    conn.close()
-
-    base_df['Chart Link'] = base_df['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
-    base_df['+1m Gain'] = base_df.apply(lambda r: round(r['rel_vol'] - vol_1m.get(r['symbol'], r['rel_vol']), 2), axis=1)
-    base_df['+3m Gain'] = base_df.apply(lambda r: round(r['rel_vol'] - vol_3m.get(r['symbol'], r['rel_vol']), 2), axis=1)
-    base_df['+5m Gain'] = base_df.apply(lambda r: round(r['rel_vol'] - vol_5m.get(r['symbol'], r['rel_vol']), 2), axis=1)
-    base_df['+15m Gain'] = base_df.apply(lambda r: round(r['rel_vol'] - vol_15m.get(r['symbol'], r['rel_vol']), 2), axis=1)
-
-    base_df['change_pct'] = base_df['change_pct'].round(2)
-    base_df['rel_vol'] = base_df['rel_vol'].round(2)
-
-    base_df = base_df.rename(columns={
-        'symbol': 'Stock Symbol',
-        'change_pct': 'Price Change (%)',
-        'rel_vol': 'End Relative Volume (Rel Vol)',
-        'sector_index': 'Sector'
-    })
-
-    cols = ['Stock Symbol', 'Chart Link', 'Price Change (%)', 'End Relative Volume (Rel Vol)', '+1m Gain', '+3m Gain', '+5m Gain', '+15m Gain']
-
-    sector_tables = {}
-    grouped = base_df.groupby('Sector')
-    for sector, group in grouped:
-        sector_tables[sector] = group[cols].sort_values(by='Price Change (%)', ascending=False).reset_index(drop=True)
-
-    return sector_tables
 
 def style_price_change(val):
     if isinstance(val, (int, float)):
@@ -379,7 +321,7 @@ def generate_5min_time_options():
     return time_options
 
 # ==========================================
-# DASHBOARD INITIALIZATION & UI
+# DASHBOARD INITIALIZATION & AUTOMATION
 # ==========================================
 init_db()
 
@@ -392,44 +334,43 @@ check_and_reset_daily(today_date_str)
 # Sidebar Options
 st.sidebar.header("🎯 Stock Universe Selection")
 universe_choice = st.sidebar.radio(
-    "Select Stock Universe:",
-    options=["FnO Stocks (~200)", "Nifty 500 Stocks"],
+    "Select Universe:",
+    options=["FnO Stocks (223)", "Nifty 500 Stocks"],
     index=0
 )
 selected_universe = "FnO" if "FnO" in universe_choice else "Nifty500"
 
+# Fetch & Save snapshot every minute automatically
 live_df = fetch_live_fno_data(universe_type=selected_universe)
 if not live_df.empty:
     save_snapshot(live_df, now_str)
 
 st.title("⚡ NSE Relative Volume & Price Movers Tracker")
-st.caption(f"Currently tracking: **{universe_choice} ({len(live_df)} Active Symbols)** | Last updated: {now_str} IST (Auto-refreshes every 60 seconds)")
+st.caption(f"Tracking: **{universe_choice} ({len(live_df)} Symbols)** | Last updated: **{now_str} IST** | 🔄 *Automated minute snapshots active*")
 
-# Sidebar Configuration
+# Manual Override Trigger
+if st.sidebar.button("⚡ Force Snapshot Now"):
+    live_df = fetch_live_fno_data(universe_type=selected_universe)
+    if not live_df.empty:
+        save_snapshot(live_df, now_str)
+    st.sidebar.success("Snapshot manually recorded!")
+    st.rerun()
+
+st.sidebar.markdown("---")
 st.sidebar.header("⚙️ Custom Time Range")
 
 time_options = generate_5min_time_options()
 time_labels = [opt[0] for opt in time_options]
 
-selected_start_label = st.sidebar.selectbox(
-    "Select Start Time:",
-    options=time_labels,
-    index=0
-)
-
+selected_start_label = st.sidebar.selectbox("Start Time:", options=time_labels, index=0)
 start_idx = time_labels.index(selected_start_label)
 default_end_idx = min(start_idx + 1, len(time_labels) - 1)
 
-selected_end_label = st.sidebar.selectbox(
-    "Select End Time:",
-    options=time_labels,
-    index=default_end_idx
-)
+selected_end_label = st.sidebar.selectbox("End Time:", options=time_labels, index=default_end_idx)
 
 custom_start_time = next(opt[1] for opt in time_options if opt[0] == selected_start_label)
 custom_end_time = next(opt[1] for opt in time_options if opt[0] == selected_end_label)
 
-st.sidebar.markdown("---")
 if st.sidebar.button("🧹 Clear Snapshot History"):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -440,8 +381,8 @@ if st.sidebar.button("🧹 Clear Snapshot History"):
     st.rerun()
 
 # Timeframe Tabs
-tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sector = st.tabs([
-    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📊 Sector-Wise Analysis"
+tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day = st.tabs([
+    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers"
 ])
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
@@ -451,11 +392,11 @@ for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
         if not df_rel.empty:
             st.dataframe(
                 df_rel.style.map(style_price_change, subset=['Price Change %']),
-                column_config={"TradingView Chart": st.column_config.LinkColumn("Chart", display_text="Open Chart")},
+                column_config={"TradingView Chart": st.column_config.LinkColumn("Chart", display_text="Chart")},
                 use_container_width=True
             )
         else:
-            st.info("Accumulating sufficient snapshot data for this interval...")
+            st.info("Accumulating minute snapshot data for this interval...")
 
 with tab_custom:
     st.subheader("Top Volume Gainers - Custom Time Window")
@@ -467,7 +408,7 @@ with tab_custom:
         st.caption(f"Comparing snapshot from **{act_start}** to **{act_end}**")
         st.dataframe(
             df_custom.style.map(style_price_change, subset=['Price Change %']),
-            column_config={"TradingView Chart": st.column_config.LinkColumn("Chart", display_text="Open Chart")},
+            column_config={"TradingView Chart": st.column_config.LinkColumn("Chart", display_text="Chart")},
             use_container_width=True
         )
     else:
@@ -482,9 +423,20 @@ with tab_day:
         st.markdown("### 🟢 Top 10 Price Gainers")
         if not gainers.empty:
             st.dataframe(
-                gainers.style.map(style_price_change, subset=['Price Change %']),
-                column_config={"TradingView Chart": st.column_config.LinkColumn("Chart", display_text="Open Chart")},
-                use_container_width=True
+                gainers.style.map(style_price_change, subset=['Chg %']),
+                column_config={
+                    "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
+                    "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
+                    "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
+                    "RVol": st.column_config.NumberColumn("RVol", width="small"),
+                    "+1m": st.column_config.NumberColumn("+1m", width="small"),
+                    "+3m": st.column_config.NumberColumn("+3m", width="small"),
+                    "+5m": st.column_config.NumberColumn("+5m", width="small"),
+                    "+10m": st.column_config.NumberColumn("+10m", width="small"),
+                    "+15m": st.column_config.NumberColumn("+15m", width="small"),
+                },
+                use_container_width=True,
+                hide_index=True
             )
         else:
             st.info("No data available.")
@@ -493,24 +445,20 @@ with tab_day:
         st.markdown("### 🔴 Top 10 Price Losers")
         if not losers.empty:
             st.dataframe(
-                losers.style.map(style_price_change, subset=['Price Change %']),
-                column_config={"TradingView Chart": st.column_config.LinkColumn("Chart", display_text="Open Chart")},
-                use_container_width=True
+                losers.style.map(style_price_change, subset=['Chg %']),
+                column_config={
+                    "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
+                    "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
+                    "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
+                    "RVol": st.column_config.NumberColumn("RVol", width="small"),
+                    "+1m": st.column_config.NumberColumn("+1m", width="small"),
+                    "+3m": st.column_config.NumberColumn("+3m", width="small"),
+                    "+5m": st.column_config.NumberColumn("+5m", width="small"),
+                    "+10m": st.column_config.NumberColumn("+10m", width="small"),
+                    "+15m": st.column_config.NumberColumn("+15m", width="small"),
+                },
+                use_container_width=True,
+                hide_index=True
             )
         else:
             st.info("No data available.")
-
-with tab_sector:
-    st.subheader("Sector-Wise Multi-Timeframe Volume Breakdown")
-    sector_data = fetch_sector_wise_data(live_df, now_str)
-    
-    if sector_data:
-        for sector, s_df in sector_data.items():
-            with st.expander(f"📁 {sector} ({len(s_df)} Stocks)", expanded=False):
-                st.dataframe(
-                    s_df.style.map(style_price_change, subset=['Price Change (%)']),
-                    column_config={"Chart Link": st.column_config.LinkColumn("Chart", display_text="Open Chart")},
-                    use_container_width=True
-                )
-    else:
-        st.info("Sector breakdown populating as market snapshots accumulate...")
