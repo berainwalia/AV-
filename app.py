@@ -94,18 +94,22 @@ FNO_SECTOR_MAP = {
 
 st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
 
-# Custom CSS
+# Custom CSS to FORCE horizontal scrollbars on tables and optimize row display
 st.markdown("""
     <style>
-    .stDataFrame table {
-        font-size: 12px !important;
+    /* Force table containers to allow horizontal scroll */
+    [data-testid="stDataFrame"], [data-testid="stTable"] {
+        overflow-x: auto !important;
+        white-space: nowrap !important;
     }
-    div[data-testid="stTable"] {
-        width: 100% !important;
+    .stDataFrame table {
+        font-size: 13px !important;
+        min-width: 800px; /* Ensures scrollbar triggers on narrow views */
     }
     </style>
 """, unsafe_allow_html=True)
 
+# Auto-refresh app every 60 seconds (60,000 ms)
 st_autorefresh(interval=60000, key="datarefresh")
 
 # ==========================================
@@ -231,7 +235,8 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
 
-    top = merged.sort_values(by='Gain', ascending=False).head(10).copy()
+    # Changed from 10 to 20 stocks
+    top = merged.sort_values(by='Gain', ascending=False).head(20).copy()
     top['TradingView Chart'] = top['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
 
     top = top[['symbol', 'sector_index', 'TradingView Chart', 'change_pct', 'rel_vol_end', 'Gain']].copy()
@@ -248,9 +253,9 @@ def calculate_gain_relative(minutes, current_time_str):
     df, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, f'+{minutes}m Gain')
     return df, label
 
-def fetch_day_movers_with_tf_comparison(live_df, current_time_str):
+def fetch_multi_timeframe_data(live_df, current_time_str):
     if live_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame()
 
     conn = sqlite3.connect(DB_NAME)
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
@@ -281,8 +286,16 @@ def fetch_day_movers_with_tf_comparison(live_df, current_time_str):
     df['+10m'] = df.apply(lambda r: round(r['RelVol'] - vol_10m.get(r['Symbol'], r['RelVol']), 2), axis=1)
     df['+15m'] = df.apply(lambda r: round(r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), 2), axis=1)
 
-    gainers = df.sort_values(by='ChangePct', ascending=False).head(10).copy()
-    losers = df.sort_values(by='ChangePct', ascending=True).head(10).copy()
+    return df
+
+def fetch_day_movers_with_tf_comparison(live_df, current_time_str):
+    df = fetch_multi_timeframe_data(live_df, current_time_str)
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Changed from 10 to 20 stocks for both Gainers and Losers
+    gainers = df.sort_values(by='ChangePct', ascending=False).head(20).copy()
+    losers = df.sort_values(by='ChangePct', ascending=True).head(20).copy()
 
     cols_order = ['Symbol', 'TradingView Chart', 'ChangePct', 'RelVol', '+1m', '+3m', '+5m', '+10m', '+15m']
     col_names = ['Symbol', 'Chart', 'Chg %', 'RVol', '+1m', '+3m', '+5m', '+10m', '+15m']
@@ -296,73 +309,6 @@ def fetch_day_movers_with_tf_comparison(live_df, current_time_str):
         losers.columns = col_names
 
     return gainers.reset_index(drop=True), losers.reset_index(drop=True)
-
-# ==========================================
-# NEW: SECTOR-WISE RELATIVE VOLUME COMPARISON
-# ==========================================
-def fetch_sector_relvol_comparison(live_df, current_time_str):
-    if live_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    conn = sqlite3.connect(DB_NAME)
-    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-    cursor = conn.cursor()
-
-    def get_past_relvol(mins):
-        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
-        p_row = cursor.fetchone()
-        if p_row:
-            p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
-            return dict(zip(p_df['symbol'], p_df['rel_vol']))
-        return {}
-
-    vol_1m = get_past_relvol(1)
-    vol_3m = get_past_relvol(3)
-    vol_5m = get_past_relvol(5)
-    vol_10m = get_past_relvol(10)
-    vol_15m = get_past_relvol(15)
-    conn.close()
-
-    df = live_df.copy()
-    df['+1m'] = df.apply(lambda r: r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+3m'] = df.apply(lambda r: r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+5m'] = df.apply(lambda r: r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+10m'] = df.apply(lambda r: r['RelVol'] - vol_10m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+15m'] = df.apply(lambda r: r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), axis=1)
-
-    # Grouping stock metrics by sector
-    sector_summary = df.groupby('Sector Index').agg(
-        Stocks_Count=('Symbol', 'count'),
-        Avg_Chg_Pct=('ChangePct', 'mean'),
-        Avg_RelVol=('RelVol', 'mean'),
-        Gain_1m=('+1m', 'mean'),
-        Gain_3m=('+3m', 'mean'),
-        Gain_5m=('+5m', 'mean'),
-        Gain_10m=('+10m', 'mean'),
-        Gain_15m=('+15m', 'mean')
-    ).reset_index()
-
-    sector_summary = sector_summary.sort_values(by='Avg_RelVol', ascending=False)
-    
-    numeric_cols = ['Avg_Chg_Pct', 'Avg_RelVol', 'Gain_1m', 'Gain_3m', 'Gain_5m', 'Gain_10m', 'Gain_15m']
-    sector_summary[numeric_cols] = sector_summary[numeric_cols].round(2)
-
-    sector_summary.columns = [
-        'Sector Index', 'Count', 'Avg Chg %', 'Avg RVol', 
-        '+1m', '+3m', '+5m', '+10m', '+15m'
-    ]
-
-    # Detailed stock view for drill-down analysis
-    df_stocks = df.copy()
-    df_stocks['TradingView Chart'] = df_stocks['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
-    df_stocks[['ChangePct', 'RelVol', '+1m', '+3m', '+5m', '+10m', '+15m']] = df_stocks[['ChangePct', 'RelVol', '+1m', '+3m', '+5m', '+10m', '+15m']].round(2)
-    
-    cols_order = ['Symbol', 'Sector Index', 'TradingView Chart', 'ChangePct', 'RelVol', '+1m', '+3m', '+5m', '+10m', '+15m']
-    df_stocks = df_stocks[cols_order]
-    df_stocks.columns = ['Symbol', 'Sector Index', 'Chart', 'Chg %', 'RVol', '+1m', '+3m', '+5m', '+10m', '+15m']
-
-    return sector_summary.reset_index(drop=True), df_stocks.reset_index(drop=True)
 
 def style_price_change(val):
     if isinstance(val, (int, float)):
@@ -446,14 +392,14 @@ if st.sidebar.button("🧹 Clear Snapshot History"):
     st.sidebar.success("Database reset successful!")
     st.rerun()
 
-# Timeframe Tabs
+# Timeframe & Sector Tabs
 tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sector = st.tabs([
-    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "🏢 Sector Relative Volume"
+    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📊 Sector-wise RelVol"
 ])
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
     with tab:
-        st.subheader(f"Top 10 Volume Gainers - Last {mins} Minute(s)")
+        st.subheader(f"Top 20 Volume Gainers - Last {mins} Minute(s)")
         df_rel, label_name = calculate_gain_relative(mins, now_str)
         if not df_rel.empty:
             st.dataframe(
@@ -465,7 +411,7 @@ for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
             st.info("Accumulating minute snapshot data for this interval...")
 
 with tab_custom:
-    st.subheader("Top Volume Gainers - Custom Time Window")
+    st.subheader("Top 20 Volume Gainers - Custom Time Window")
     start_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
     end_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
     
@@ -480,99 +426,21 @@ with tab_custom:
     else:
         st.info("No snapshots recorded for the selected custom timeframe yet.")
 
+# ==========================================
+# TOP GAINERS (TOP) & LOSERS (BOTTOM) STACKED TAB
+# ==========================================
 with tab_day:
     st.subheader("Day's Top Price Gainers & Losers with Multi-Timeframe Volume Gains")
     gainers, losers = fetch_day_movers_with_tf_comparison(live_df, now_str)
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### 🟢 Top 10 Price Gainers")
-        if not gainers.empty:
-            st.dataframe(
-                gainers.style.map(style_price_change, subset=['Chg %']),
-                column_config={
-                    "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
-                    "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-                    "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
-                    "RVol": st.column_config.NumberColumn("RVol", width="small"),
-                    "+1m": st.column_config.NumberColumn("+1m", width="small"),
-                    "+3m": st.column_config.NumberColumn("+3m", width="small"),
-                    "+5m": st.column_config.NumberColumn("+5m", width="small"),
-                    "+10m": st.column_config.NumberColumn("+10m", width="small"),
-                    "+15m": st.column_config.NumberColumn("+15m", width="small"),
-                },
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info("No data available.")
-
-    with col2:
-        st.markdown("### 🔴 Top 10 Price Losers")
-        if not losers.empty:
-            st.dataframe(
-                losers.style.map(style_price_change, subset=['Chg %']),
-                column_config={
-                    "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
-                    "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-                    "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
-                    "RVol": st.column_config.NumberColumn("RVol", width="small"),
-                    "+1m": st.column_config.NumberColumn("+1m", width="small"),
-                    "+3m": st.column_config.NumberColumn("+3m", width="small"),
-                    "+5m": st.column_config.NumberColumn("+5m", width="small"),
-                    "+10m": st.column_config.NumberColumn("+10m", width="small"),
-                    "+15m": st.column_config.NumberColumn("+15m", width="small"),
-                },
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info("No data available.")
-
-# ==========================================
-# TAB: SECTOR RELATIVE VOLUME TRACKER
-# ==========================================
-with tab_sector:
-    st.subheader("🏢 Sector Relative Volume Summary & Multi-Timeframe Delta")
-    
-    sector_summary, stock_details = fetch_sector_relvol_comparison(live_df, now_str)
-    
-    if not sector_summary.empty:
-        st.markdown("### 📊 Sector Overview")
+    # 🟢 Top Gainers Section (Lies Above)
+    st.markdown("### 🟢 Top 20 Price Gainers")
+    if not gainers.empty:
         st.dataframe(
-            sector_summary.style.map(style_price_change, subset=['Avg Chg %']),
-            column_config={
-                "Sector Index": st.column_config.TextColumn("Sector Index", width="medium"),
-                "Count": st.column_config.NumberColumn("Stocks", width="small"),
-                "Avg Chg %": st.column_config.NumberColumn("Avg Chg %", width="small"),
-                "Avg RVol": st.column_config.NumberColumn("Avg RVol", width="small"),
-                "+1m": st.column_config.NumberColumn("+1m", width="small"),
-                "+3m": st.column_config.NumberColumn("+3m", width="small"),
-                "+5m": st.column_config.NumberColumn("+5m", width="small"),
-                "+10m": st.column_config.NumberColumn("+10m", width="small"),
-                "+15m": st.column_config.NumberColumn("+15m", width="small"),
-            },
-            use_container_width=True,
-            hide_index=True
-        )
-
-        st.markdown("---")
-        st.markdown("### 🔍 Sector Breakdown (Stock Level)")
-        
-        sectors_list = sorted(sector_summary['Sector Index'].dropna().unique().tolist())
-        selected_sector = st.selectbox("Select Sector to view stocks:", options=["All Sectors"] + sectors_list)
-
-        if selected_sector != "All Sectors":
-            filtered_stocks = stock_details[stock_details['Sector Index'] == selected_sector]
-        else:
-            filtered_stocks = stock_details
-
-        st.dataframe(
-            filtered_stocks.style.map(style_price_change, subset=['Chg %']),
+            gainers.style.map(style_price_change, subset=['Chg %']),
             column_config={
                 "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
                 "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-                "Sector Index": st.column_config.TextColumn("Sector Index", width="medium"),
                 "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
                 "RVol": st.column_config.NumberColumn("RVol", width="small"),
                 "+1m": st.column_config.NumberColumn("+1m", width="small"),
@@ -585,4 +453,95 @@ with tab_sector:
             hide_index=True
         )
     else:
-        st.info("No sector data available. Awaiting snapshot accumulation.")
+        st.info("No data available for top gainers.")
+
+    st.markdown("---")
+
+    # 🔴 Top Losers Section (Lies Below)
+    st.markdown("### 🔴 Top 20 Price Losers")
+    if not losers.empty:
+        st.dataframe(
+            losers.style.map(style_price_change, subset=['Chg %']),
+            column_config={
+                "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
+                "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
+                "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
+                "RVol": st.column_config.NumberColumn("RVol", width="small"),
+                "+1m": st.column_config.NumberColumn("+1m", width="small"),
+                "+3m": st.column_config.NumberColumn("+3m", width="small"),
+                "+5m": st.column_config.NumberColumn("+5m", width="small"),
+                "+10m": st.column_config.NumberColumn("+10m", width="small"),
+                "+15m": st.column_config.NumberColumn("+15m", width="small"),
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No data available for top losers.")
+
+# ==========================================
+# SECTOR-WISE RELVOL COMPARISON TAB
+# ==========================================
+with tab_sector:
+    st.subheader("📊 Sector-wise Relative Volume Analysis")
+    
+    df_tf = fetch_multi_timeframe_data(live_df, now_str)
+    
+    if not df_tf.empty:
+        all_sectors = sorted(list(df_tf['Sector Index'].dropna().unique()))
+        
+        col_sel, col_sort = st.columns([2, 2])
+        with col_sel:
+            selected_sec = st.selectbox("📌 Select Sector:", options=["All Sectors"] + all_sectors, index=0)
+        with col_sort:
+            sort_metric = st.selectbox("🔽 Sort Sector Stocks By:", options=["RVol", "+5m", "+15m", "+1m", "+3m", "+10m", "ChangePct"], index=0)
+
+        # Filter by Sector
+        if selected_sec != "All Sectors":
+            sec_df = df_tf[df_tf['Sector Index'] == selected_sec].copy()
+        else:
+            sec_df = df_tf.copy()
+
+        # Sector Level Summary Metrics
+        m1, m2, m3, m4 = st.columns(4)
+        total_sec_stocks = len(sec_df)
+        adv_stocks = len(sec_df[sec_df['ChangePct'] > 0])
+        dec_stocks = len(sec_df[sec_df['ChangePct'] < 0])
+        avg_rvol = round(sec_df['RelVol'].mean(), 2) if total_sec_stocks > 0 else 0
+        top_surge_stock = sec_df.sort_values(by='RelVol', ascending=False).iloc[0]['Symbol'] if total_sec_stocks > 0 else "-"
+
+        m1.metric("Total Stocks", total_sec_stocks)
+        m2.metric("Advancing / Declining", f"{adv_stocks} 🟢 / {dec_stocks} 🔴")
+        m3.metric("Avg Sector RVol", f"{avg_rvol}x")
+        m4.metric("Top Volume Surge", top_surge_stock)
+
+        st.markdown("---")
+        
+        # Sort Dataframe
+        sec_df = sec_df.sort_values(by=sort_metric, ascending=False).reset_index(drop=True)
+        
+        cols_order = ['Symbol', 'Sector Index', 'TradingView Chart', 'ChangePct', 'RelVol', '+1m', '+3m', '+5m', '+10m', '+15m']
+        col_names = ['Symbol', 'Sector', 'Chart', 'Chg %', 'RVol', '+1m', '+3m', '+5m', '+10m', '+15m']
+
+        sec_df_display = sec_df[cols_order]
+        sec_df_display.columns = col_names
+
+        st.dataframe(
+            sec_df_display.style.map(style_price_change, subset=['Chg %']),
+            column_config={
+                "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
+                "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
+                "Sector": st.column_config.TextColumn("Sector", width="medium"),
+                "Chg %": st.column_config.NumberColumn("Chg %", width="small"),
+                "RVol": st.column_config.NumberColumn("RVol", width="small"),
+                "+1m": st.column_config.NumberColumn("+1m", width="small"),
+                "+3m": st.column_config.NumberColumn("+3m", width="small"),
+                "+5m": st.column_config.NumberColumn("+5m", width="small"),
+                "+10m": st.column_config.NumberColumn("+10m", width="small"),
+                "+15m": st.column_config.NumberColumn("+15m", width="small"),
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No market data available yet to display sectoral breakdown.")
