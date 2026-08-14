@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 DB_NAME = "relvol_fno_history.db"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Strict sector mapping generated directly from your attached file
+# Strict sector mapping generated directly from your list
 SECTOR_INDEX_MAP = {
     "360ONE": "NIFTY Fin Service",
     "ABB": "NIFTY Energy",
@@ -368,7 +368,8 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
 
-    top = merged.sort_values(by='Gain', ascending=False).head(10).copy()
+    # Display Top 20 Stocks
+    top = merged.sort_values(by='Gain', ascending=False).head(20).copy()
     top['TradingView Chart'] = top['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
 
     top = top[['symbol', 'sector_index', 'TradingView Chart', 'change_pct', 'rel_vol_end', 'Gain']].copy()
@@ -386,7 +387,6 @@ def calculate_gain_relative(minutes, current_time_str):
     return df, label
 
 def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
-    """Calculates top day gainers/losers along with multi-timeframe RelVol gains (+1m, +3m, +5m, +10m, +15m)."""
     if live_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -394,7 +394,6 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
     cursor = conn.cursor()
 
-    # Helper function to get historical relative volume map for a given minute lookback
     def get_past_relvol(mins):
         past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
@@ -423,8 +422,9 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     df['RelVol'] = df['RelVol'].round(2)
     df['ChangePct'] = df['ChangePct'].round(2)
 
-    gainers = df.sort_values(by='ChangePct', ascending=False).head(10).copy()
-    losers = df.sort_values(by='ChangePct', ascending=True).head(10).copy()
+    # Display Top 20 Gainers & Losers
+    gainers = df.sort_values(by='ChangePct', ascending=False).head(20).copy()
+    losers = df.sort_values(by='ChangePct', ascending=True).head(20).copy()
 
     cols_order = [
         'Symbol', 'Sector Index', 'TradingView Chart', 'ChangePct', 
@@ -584,7 +584,7 @@ tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sector = st.tabs([
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
     with tab:
-        st.subheader(f"Top 10 Volume Gainers - Last {mins} Minute(s)")
+        st.subheader(f"Top 20 Volume Gainers - Last {mins} Minute(s)")
         df_gain, gain_col_name = calculate_gain_relative(mins, now_str)
         
         if not df_gain.empty:
@@ -606,7 +606,7 @@ for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
 
 # Custom Range Tab
 with tab_custom:
-    st.subheader(f"Top RelVol Gainers: {selected_start_label} ➔ {selected_end_label}")
+    st.subheader(f"Top 20 RelVol Gainers: {selected_start_label} ➔ {selected_end_label}")
     
     if custom_start_time >= custom_end_time:
         st.warning("⚠️ Select an **End Time** strictly after the **Start Time**.")
@@ -638,13 +638,13 @@ with tab_custom:
         else:
             st.info(f"No snapshot data recorded between {selected_start_label} and {selected_end_label} yet.")
 
-# Day Gainers / Losers Tab (Enhanced with Multi-Timeframe RelVol Gains)
+# Day Gainers / Losers Tab
 with tab_day:
-    st.subheader("🔥 Top Day Gainers & Losers with Multi-Timeframe Volume Momentum")
+    st.subheader("🔥 Top 20 Day Gainers & Losers with Multi-Timeframe Volume Momentum")
     
     gainers_df, losers_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
     
-    st.markdown("### 🟢 Top Day Gainers (% Increase)")
+    st.markdown("### 🟢 Top 20 Day Gainers (% Increase)")
     if not gainers_df.empty:
         styled_gainers = gainers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'})
         st.dataframe(
@@ -667,7 +667,7 @@ with tab_day:
         st.info("No day gainers available.")
 
     st.markdown("---")
-    st.markdown("### 🔴 Top Day Losers (% Drop)")
+    st.markdown("### 🔴 Top 20 Day Losers (% Drop)")
     if not losers_df.empty:
         styled_losers = losers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'})
         st.dataframe(
