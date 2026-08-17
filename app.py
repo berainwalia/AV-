@@ -143,11 +143,11 @@ def save_snapshot(df, now_str):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     data = [
-        (now_str, row['Symbol'], float(row['RelVol']), float(row['ChangePct']), str(row['Sector Index'])) 
+        (now_str, row['Symbol'], float(row['RelVol']), float(row['ChangePct']), str(row['Sector Index']))
         for _, row in df.iterrows()
     ]
     cursor.executemany("""
-        INSERT OR REPLACE INTO relvol_snapshots (timestamp, symbol, rel_vol, change_pct, sector_index) 
+        INSERT OR REPLACE INTO relvol_snapshots (timestamp, symbol, rel_vol, change_pct, sector_index)
         VALUES (?, ?, ?, ?, ?)
     """, data)
     conn.commit()
@@ -156,9 +156,9 @@ def save_snapshot(df, now_str):
 # ==========================================
 # DYNAMIC SCANNER FETCHING
 # ==========================================
-def fetch_live_fno_data(stock_universe_mode="Custom List"):
+def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
     try:
-        limit = 200 if stock_universe_mode == "Custom List" else (250 if stock_universe_mode == "All F&O Stocks" else 500)
+        limit = 250 if stock_universe_mode == "F&O Stocks" else 500
         
         df = (
             Query()
@@ -177,9 +177,6 @@ def fetch_live_fno_data(stock_universe_mode="Custom List"):
         df.columns = ['Symbol', 'RelVol', 'ChangePct', 'TV Sector']
         
         df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
-        
-        if stock_universe_mode == "Custom List":
-            df = df[df['Symbol'].isin(VALID_SYMBOLS)].copy()
         
         df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
         df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
@@ -208,7 +205,7 @@ def auto_snapshot_loop():
                     
                     check_and_reset_daily(today_date_str)
                     
-                    df = fetch_live_fno_data("All F&O Stocks")
+                    df = fetch_live_fno_data("F&O Stocks")
                     if not df.empty:
                         save_snapshot(df, now_str)
         except Exception as e:
@@ -310,11 +307,11 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     losers = df.sort_values(by='ChangePct', ascending=True).head(20).copy()
 
     cols_order = [
-        'Symbol', 'Sector Index', 'TradingView Chart', 'ChangePct', 
+        'Symbol', 'Sector Index', 'TradingView Chart', 'ChangePct',
         'RelVol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
     ]
     col_names = [
-        'Stock Symbol', 'Sector Index', 'Chart Link', 'Price Change (%)', 
+        'Stock Symbol', 'Sector Index', 'Chart Link', 'Price Change (%)',
         'End Rel Vol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
     ]
 
@@ -329,7 +326,7 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     return gainers.reset_index(drop=True), losers.reset_index(drop=True)
 
 # ==========================================
-# NEW: SECTOR MAPPING & HEATMAP FUNCTIONALITY
+# SECTOR MAPPING & HEATMAP FUNCTIONALITY
 # ==========================================
 def fetch_sector_momentum_summary(live_df, current_time_str):
     if live_df.empty:
@@ -389,7 +386,7 @@ def fetch_sector_momentum_summary(live_df, current_time_str):
     sector_summary = sector_summary.sort_values(by='Avg Price Change (%)', ascending=False)
 
     cols = [
-        'Sector Index', 'Total_Stocks', 'Breadth Ratio (A/D)', 'Avg Price Change (%)', 
+        'Sector Index', 'Total_Stocks', 'Breadth Ratio (A/D)', 'Avg Price Change (%)',
         'Avg Rel Vol', '+1m Vol Gain', '+3m Vol Gain', '+5m Vol Gain', '+15m Vol Gain'
     ]
     return sector_summary[cols].reset_index(drop=True)
@@ -481,11 +478,11 @@ now_dt = datetime.now(TIMEZONE)
 now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
 today_date_str = now_dt.strftime("%Y-%m-%d")
 
-# Sidebar Configuration
+# Sidebar Configuration - RADIO BUTTON IMPLEMENTATION
 st.sidebar.header("📌 Stock Universe Selection")
-stock_universe_mode = st.sidebar.selectbox(
+stock_universe_mode = st.sidebar.radio(
     "Choose Stock Universe:",
-    options=["Custom List", "All F&O Stocks", "NIFTY 500 / All NSE Stocks"],
+    options=["F&O Stocks", "NSE 500"],
     index=0
 )
 
@@ -569,7 +566,7 @@ for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
         if not df_gain.empty:
             styled_df = df_gain.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
             st.dataframe(
-                styled_df, 
+                styled_df,
                 use_container_width=True,
                 column_config={
                     "Symbol": st.column_config.Column(alignment="center"),
@@ -594,8 +591,8 @@ with tab_custom:
         end_ts_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
         
         df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(
-            start_ts_str, 
-            end_ts_str, 
+            start_ts_str,
+            end_ts_str,
             label_name="Custom Window Gain"
         )
         
@@ -603,7 +600,7 @@ with tab_custom:
             st.caption(f"Data window active from `{act_start.split(' ')[1]}` to `{act_end.split(' ')[1]}`.")
             styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
             st.dataframe(
-                styled_custom, 
+                styled_custom,
                 use_container_width=True,
                 column_config={
                     "Symbol": st.column_config.Column(alignment="center"),
