@@ -101,9 +101,8 @@ st_autorefresh(interval=60000, key="datarefresh")
 # THREAD-SAFE DATABASE HELPER FUNCTIONS
 # ==========================================
 def get_db_connection():
-    """Returns a thread-safe connection configured with timeouts to handle concurrency."""
     conn = sqlite3.connect(DB_NAME, timeout=30.0, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")  # Enable WAL mode for high concurrency
+    conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
 def init_db():
@@ -126,7 +125,6 @@ def init_db():
                 value TEXT
             )
         """)
-        # Safe migration check: Add pdh_status column if it doesn't exist in older table schemas
         cursor.execute("PRAGMA table_info(relvol_snapshots);")
         columns = [column[1] for column in cursor.fetchall()]
         if "pdh_status" not in columns:
@@ -164,7 +162,6 @@ def save_snapshot(df, now_str):
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_pdh_pdl_dict(symbol_tuple):
-    """Fetches Previous Day High & Low for symbols via yfinance and caches for 24h."""
     symbol_list = list(symbol_tuple)
     pdh_pdl_map = {}
     yf_symbols = [f"{s}.NS" for s in symbol_list]
@@ -177,7 +174,7 @@ def fetch_pdh_pdl_dict(symbol_tuple):
                 df_sym = data if len(symbol_list) == 1 else data[ticker_yf]
                 df_clean = df_sym.dropna(subset=['High', 'Low'])
                 if len(df_clean) >= 2:
-                    prev_day = df_clean.iloc[-2]  # Yesterday's completed bar
+                    prev_day = df_clean.iloc[-2]
                     pdh_pdl_map[sym] = {
                         'PDH': float(prev_day['High']),
                         'PDL': float(prev_day['Low'])
@@ -219,7 +216,6 @@ def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
         df['High'] = pd.to_numeric(df['High'], errors='coerce')
         df['Low'] = pd.to_numeric(df['Low'], errors='coerce')
 
-        # Pull cached PDH/PDL mapping
         symbols_tuple = tuple(df['Symbol'].tolist())
         pdh_pdl_map = fetch_pdh_pdl_dict(symbols_tuple)
 
@@ -292,7 +288,6 @@ def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
         actual_start_ts = start_row[0]
         actual_end_ts = end_row[0]
 
-        # Use COALESCE on pdh_status to prevent errors on older missing records
         df_end = pd.read_sql_query(
             "SELECT symbol, rel_vol, change_pct, sector_index, COALESCE(pdh_status, 'Inside Range ➖') as pdh_status FROM relvol_snapshots WHERE timestamp = ?", 
             conn, 
@@ -370,7 +365,7 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
         'RelVol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
     ]
     col_names = [
-        'Stock Symbol', 'PDH/PDL Status', 'Sector Index', 'Chart Link', 'Price Change (%)',
+        'Stock Symbol', 'PDH/PDL Status', 'Sector Index', 'TradingView Chart', 'Price Change (%)',
         'End Rel Vol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
     ]
 
@@ -403,6 +398,14 @@ def generate_5min_time_options():
         time_options.append((label, current.time()))
         current += timedelta(minutes=5)
     return time_options
+
+# Standard column config for clickable hyperlinks
+LINK_COLUMN_CONFIG = {
+    "TradingView Chart": st.column_config.LinkColumn(
+        "TradingView Chart",
+        display_text="Open Chart 📈"
+    )
+}
 
 # ==========================================
 # DASHBOARD UI
@@ -447,7 +450,7 @@ for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
         df_gain, gain_col_name = calculate_gain_relative(mins, now_str)
         if not df_gain.empty:
             styled_df = df_gain.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-            st.dataframe(styled_df, use_container_width=True)
+            st.dataframe(styled_df, column_config=LINK_COLUMN_CONFIG, use_container_width=True)
         else:
             st.info("Accumulating minute-by-minute background snapshots... Please wait.")
 
@@ -459,14 +462,14 @@ with tab_custom:
         df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(start_ts_str, end_ts_str, label_name="Custom Window Gain")
         if not df_custom.empty:
             styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-            st.dataframe(styled_custom, use_container_width=True)
+            st.dataframe(styled_custom, column_config=LINK_COLUMN_CONFIG, use_container_width=True)
 
 with tab_day:
     st.subheader("🔥 Top 20 Day Gainers & Losers with Multi-Timeframe Volume Momentum")
     gainers_df, losers_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
     if not gainers_df.empty:
         st.markdown("### 🟢 Top 20 Day Gainers (% Increase)")
-        st.dataframe(gainers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), use_container_width=True)
+        st.dataframe(gainers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
     if not losers_df.empty:
         st.markdown("### 🔴 Top 20 Day Losers (% Drop)")
-        st.dataframe(losers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), use_container_width=True)
+        st.dataframe(losers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
