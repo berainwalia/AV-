@@ -98,58 +98,66 @@ st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
 st_autorefresh(interval=60000, key="datarefresh")
 
 # ==========================================
-# DATABASE FUNCTIONS
+# THREAD-SAFE DATABASE HELPER FUNCTIONS
 # ==========================================
+def get_db_connection():
+    """Returns a thread-safe connection configured with timeouts to handle concurrency."""
+    conn = sqlite3.connect(DB_NAME, timeout=30.0, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")  # Enable WAL mode for high concurrency
+    return conn
+
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS relvol_snapshots (
-            timestamp TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            rel_vol REAL NOT NULL,
-            change_pct REAL,
-            sector_index TEXT,
-            pdh_status TEXT,
-            PRIMARY KEY (timestamp, symbol)
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS system_config (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS relvol_snapshots (
+                timestamp TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                rel_vol REAL NOT NULL,
+                change_pct REAL,
+                sector_index TEXT,
+                pdh_status TEXT,
+                PRIMARY KEY (timestamp, symbol)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS system_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        # Safe migration check: Add pdh_status column if it doesn't exist in older table schemas
+        cursor.execute("PRAGMA table_info(relvol_snapshots);")
+        columns = [column[1] for column in cursor.fetchall()]
+        if "pdh_status" not in columns:
+            cursor.execute("ALTER TABLE relvol_snapshots ADD COLUMN pdh_status TEXT;")
+        conn.commit()
 
 def check_and_reset_daily(today_date_str):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM system_config WHERE key = 'last_reset_date'")
-    row = cursor.fetchone()
-    
-    if not row or row[0] != today_date_str:
-        cursor.execute("DELETE FROM relvol_snapshots")
-        cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('last_reset_date', ?)", (today_date_str,))
-        conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM system_config WHERE key = 'last_reset_date'")
+        row = cursor.fetchone()
+        
+        if not row or row[0] != today_date_str:
+            cursor.execute("DELETE FROM relvol_snapshots")
+            cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('last_reset_date', ?)", (today_date_str,))
+            conn.commit()
 
 def save_snapshot(df, now_str):
     if df.empty:
         return
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    data = [
-        (now_str, row['Symbol'], float(row['RelVol']), float(row['ChangePct']), str(row['Sector Index']), str(row['PDH_Status']))
-        for _, row in df.iterrows()
-    ]
-    cursor.executemany("""
-        INSERT OR REPLACE INTO relvol_snapshots (timestamp, symbol, rel_vol, change_pct, sector_index, pdh_status)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, data)
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        data = [
+            (now_str, row['Symbol'], float(row['RelVol']), float(row['ChangePct']), str(row['Sector Index']), str(row['PDH_Status']))
+            for _, row in df.iterrows()
+        ]
+        cursor.executemany("""
+            INSERT OR REPLACE INTO relvol_snapshots (timestamp, symbol, rel_vol, change_pct, sector_index, pdh_status)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, data)
+        conn.commit()
 
 # ==========================================
 # YFINANCE PRE-FETCHING (DAILY CACHED)
@@ -269,25 +277,32 @@ if "bg_thread_started" not in st.session_state:
 # CALCULATIONS & PROCESSING
 # ==========================================
 def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (end_ts,))
-    end_row = cursor.fetchone()
-    
-    cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (start_ts,))
-    start_row = cursor.fetchone()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (end_ts,))
+        end_row = cursor.fetchone()
+        
+        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (start_ts,))
+        start_row = cursor.fetchone()
 
-    if not end_row or not start_row or not end_row[0] or not start_row[0]:
-        conn.close()
-        return pd.DataFrame(), label_name, None, None
+        if not end_row or not start_row or not end_row[0] or not start_row[0]:
+            return pd.DataFrame(), label_name, None, None
 
-    actual_start_ts = start_row[0]
-    actual_end_ts = end_row[0]
+        actual_start_ts = start_row[0]
+        actual_end_ts = end_row[0]
 
-    df_end = pd.read_sql_query("SELECT symbol, rel_vol, change_pct, sector_index, pdh_status FROM relvol_snapshots WHERE timestamp = ?", conn, params=(actual_end_ts,))
-    df_start = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(actual_start_ts,))
-    conn.close()
+        # Use COALESCE on pdh_status to prevent errors on older missing records
+        df_end = pd.read_sql_query(
+            "SELECT symbol, rel_vol, change_pct, sector_index, COALESCE(pdh_status, 'Inside Range ➖') as pdh_status FROM relvol_snapshots WHERE timestamp = ?", 
+            conn, 
+            params=(actual_end_ts,)
+        )
+        df_start = pd.read_sql_query(
+            "SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", 
+            conn, 
+            params=(actual_start_ts,)
+        )
 
     if df_end.empty or df_start.empty:
         return pd.DataFrame(), label_name, actual_start_ts, actual_end_ts
@@ -316,17 +331,17 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     if live_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    conn = sqlite3.connect(DB_NAME)
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-    cursor = conn.cursor()
 
     def get_past_relvol(mins):
         past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
-        p_row = cursor.fetchone()
-        if p_row:
-            p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
-            return dict(zip(p_df['symbol'], p_df['rel_vol']))
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
+            p_row = cursor.fetchone()
+            if p_row:
+                p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
+                return dict(zip(p_df['symbol'], p_df['rel_vol']))
         return {}
 
     vol_1m = get_past_relvol(1)
@@ -334,7 +349,6 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     vol_5m = get_past_relvol(5)
     vol_10m = get_past_relvol(10)
     vol_15m = get_past_relvol(15)
-    conn.close()
 
     df = live_df.copy()
     df['TradingView Chart'] = df['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
