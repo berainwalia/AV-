@@ -324,7 +324,7 @@ def calculate_gain_relative(minutes, current_time_str):
 
 def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     if live_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
 
@@ -377,7 +377,11 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
         losers = losers[cols_order]
         losers.columns = col_names
 
-    return gainers.reset_index(drop=True), losers.reset_index(drop=True)
+    # Return df as full dataset for sector processing
+    df_renamed = df[cols_order].copy()
+    df_renamed.columns = col_names
+
+    return gainers.reset_index(drop=True), losers.reset_index(drop=True), df_renamed.reset_index(drop=True)
 
 def style_price_change(val):
     if isinstance(val, (int, float)):
@@ -399,7 +403,6 @@ def generate_5min_time_options():
         current += timedelta(minutes=5)
     return time_options
 
-# Standard column config for clickable hyperlinks
 LINK_COLUMN_CONFIG = {
     "TradingView Chart": st.column_config.LinkColumn(
         "TradingView Chart",
@@ -440,8 +443,8 @@ live_df = fetch_live_fno_data(stock_universe_mode)
 st.title("⚡ NSE Relative Volume & Price Movers")
 st.caption(f"Active Universe: **{stock_universe_mode} ({len(live_df)} Tickers)** | PDH/PDL Scanner: 🟢 **Active** | Refreshed: {now_str} IST")
 
-tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day = st.tabs([
-    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers"
+tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sectors = st.tabs([
+    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📂 Sectors"
 ])
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
@@ -466,10 +469,61 @@ with tab_custom:
 
 with tab_day:
     st.subheader("🔥 Top 20 Day Gainers & Losers with Multi-Timeframe Volume Momentum")
-    gainers_df, losers_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
+    gainers_df, losers_df, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
     if not gainers_df.empty:
         st.markdown("### 🟢 Top 20 Day Gainers (% Increase)")
         st.dataframe(gainers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
     if not losers_df.empty:
         st.markdown("### 🔴 Top 20 Day Losers (% Drop)")
         st.dataframe(losers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
+
+# ==========================================
+# NEW TAB: SECTOR WISE ANALYSIS
+# ==========================================
+with tab_sectors:
+    st.subheader("📂 Sector-Wise Relative Volume & Momentum")
+    _, _, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
+
+    if not full_df.empty:
+        # Aggregated Overview Table by Sector
+        st.markdown("### 📊 Sector Volume & Price Overview")
+        sector_summary = full_df.groupby('Sector Index').agg(
+            Stock_Count=('Stock Symbol', 'count'),
+            Avg_RelVol=('End Rel Vol', 'mean'),
+            Avg_Price_Change=('Price Change (%)', 'mean')
+        ).reset_index()
+
+        sector_summary['Avg_RelVol'] = sector_summary['Avg_RelVol'].round(2)
+        sector_summary['Avg_Price_Change'] = sector_summary['Avg_Price_Change'].round(2)
+        sector_summary = sector_summary.sort_values(by='Avg_RelVol', ascending=False)
+        
+        sector_summary.columns = ['Sector Index', 'Total Stocks', 'Average Rel Vol', 'Average Price Change (%)']
+        
+        styled_summary = sector_summary.style.map(
+            style_price_change, subset=['Average Price Change (%)']
+        ).format({'Average Price Change (%)': '{:+.2f}%'})
+        
+        st.dataframe(styled_summary, use_container_width=True)
+
+        st.markdown("---")
+
+        # Sector Stock Screener Selector
+        st.markdown("### 🎯 Filter Stocks by Sector")
+        all_sectors = sorted(full_df['Sector Index'].unique().tolist())
+        selected_sector = st.selectbox("Select Sector:", options=all_sectors)
+
+        sector_stocks = full_df[full_df['Sector Index'] == selected_sector].sort_values(
+            by='End Rel Vol', ascending=False
+        ).reset_index(drop=True)
+
+        styled_sector_stocks = sector_stocks.style.map(
+            style_price_change, subset=['Price Change (%)']
+        ).format({'Price Change (%)': '{:+.2f}%'})
+
+        st.dataframe(
+            styled_sector_stocks, 
+            column_config=LINK_COLUMN_CONFIG, 
+            use_container_width=True
+        )
+    else:
+        st.info("Loading sector relative volume data...")
