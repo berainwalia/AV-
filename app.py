@@ -10,22 +10,17 @@ import threading
 import time as time_module
 
 # ==========================================
-# CONFIGURATION & SECTOR/THEMATIC MAPPINGS
+# CONFIGURATION & SECTOR MAPPINGS
 # ==========================================
 DB_NAME = "relvol_fno_history.db"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Broad Sector Indices vs Thematic Indices
-SECTORAL_INDICES = [
-    "NIFTY Bank", "NIFTY PSU Bank", "NIFTY IT", "NIFTY FMCG", 
-    "NIFTY Pharma", "NIFTY Healthcare", "NIFTY Auto", "NIFTY Metal", 
-    "NIFTY Fin Service", "NIFTY Realty", "NIFTY Oil & Gas"
-]
-
-THEMATIC_INDICES = [
-    "NIFTY Defence", "NIFTY Energy", "NIFTY Infra", "NIFTY Consumption",
-    "NIFTY Consumer Durables", "NIFTY Industrials", "NIFTY Transportation",
-    "NIFTY Services", "NIFTY Chemicals", "NIFTY Telecom", "NIFTY Plastics"
+# List of major NSE Sectoral and Thematic Index Tickers for TradingView
+INDICES_LIST = [
+    "NIFTY_BANK", "NIFTY_IT", "NIFTY_AUTO", "NIFTY_PHARMA", "NIFTY_FMCG",
+    "NIFTY_METAL", "NIFTY_REALTY", "NIFTY_ENERGY", "NIFTY_INFRA", "NIFTY_MEDIA",
+    "NIFTY_CONSUMPTION", "NIFTY_CPSE", "NIFTY_PSE", "NIFTY_COMMODITIES", 
+    "NIFTY_MNC", "NIFTY_SERV_SECT", "NIFTY_FIN_SERVICE", "NIFTY_HEALTHCARE"
 ]
 
 SECTOR_INDEX_MAP = {
@@ -252,6 +247,36 @@ def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
         print(f"Error pulling stock updates: {e}")
         return pd.DataFrame()
 
+def fetch_live_indices_data():
+    try:
+        df = (
+            Query()
+            .set_markets('india')
+            .select('name', 'relative_volume_10d_calc', 'change', 'close')
+            .get_scanner_data()
+        )
+        if isinstance(df, tuple):
+            df = df[1]
+
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        df = df[['name', 'relative_volume_10d_calc', 'change']].dropna()
+        df.columns = ['Symbol', 'RelVol', 'ChangePct']
+
+        df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
+        df = df[df['Symbol'].isin(INDICES_LIST)].copy()
+
+        df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
+        df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
+        df['Sector Index'] = "Index"
+        df['PDH_Status'] = "N/A"
+
+        return df.dropna().reset_index(drop=True)
+    except Exception as e:
+        print(f"Error pulling indices data: {e}")
+        return pd.DataFrame()
+
 # ==========================================
 # BACKGROUND AUTOMATIC SNAPSHOT SCHEDULER
 # ==========================================
@@ -268,8 +293,11 @@ def auto_snapshot_loop():
                     check_and_reset_daily(today_date_str)
                     
                     df = fetch_live_fno_data("F&O Stocks")
-                    if not df.empty:
-                        save_snapshot(df, now_str)
+                    indices_df = fetch_live_indices_data()
+                    combined_df = pd.concat([df, indices_df], ignore_index=True)
+
+                    if not combined_df.empty:
+                        save_snapshot(combined_df, now_str)
         except Exception as e:
             print(f"Background Snapshot Exception: {e}")
             
@@ -395,66 +423,6 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
 
     return gainers.reset_index(drop=True), losers.reset_index(drop=True), df_renamed.reset_index(drop=True)
 
-def render_category_analysis_ui(full_df, categories_list, category_title, select_box_key):
-    """Generic Helper to render Sector or Thematic Index analysis UI"""
-    st.subheader(f"{category_title} Relative Volume & Momentum")
-    
-    if not full_df.empty:
-        filtered_df = full_df[full_df['Sector Index'].isin(categories_list)].copy()
-
-        if filtered_df.empty:
-            st.info(f"No active tickers found under {category_title}.")
-            return
-
-        # Overview Table
-        st.markdown(f"### 📊 All {category_title} Comparison Overview")
-        summary = filtered_df.groupby('Sector Index').agg(
-            Stock_Count=('Stock Symbol', 'count'),
-            Avg_RelVol=('End Rel Vol', 'mean'),
-            Avg_Price_Change=('Price Change (%)', 'mean'),
-            Avg_1m_Gain=('+1m Gain', 'mean'),
-            Avg_3m_Gain=('+3m Gain', 'mean'),
-            Avg_5m_Gain=('+5m Gain', 'mean'),
-            Avg_10m_Gain=('+10m Gain', 'mean'),
-            Avg_15m_Gain=('+15m Gain', 'mean')
-        ).reset_index()
-
-        numeric_cols = ['Avg_RelVol', 'Avg_Price_Change', 'Avg_1m_Gain', 'Avg_3m_Gain', 'Avg_5m_Gain', 'Avg_10m_Gain', 'Avg_15m_Gain']
-        summary[numeric_cols] = summary[numeric_cols].round(2)
-        summary = summary.sort_values(by='Avg_RelVol', ascending=False).reset_index(drop=True)
-        
-        summary.columns = [
-            'Index / Sector', 'Total Stocks', 'Average Rel Vol', 'Average Price Change (%)',
-            '+1m Vol Gain', '+3m Vol Gain', '+5m Vol Gain', '+10m Vol Gain', '+15m Vol Gain'
-        ]
-        
-        styled_summary = summary.style.map(
-            style_price_change, subset=['Average Price Change (%)']
-        ).format({'Average Price Change (%)': '{:+.2f}%'})
-        
-        st.dataframe(styled_summary, use_container_width=True)
-
-        st.markdown("---")
-
-        # Specific Filter Selector
-        st.markdown(f"### 🎯 Filter Stocks by Specific {category_title}")
-        available_categories = sorted(filtered_df['Sector Index'].unique().tolist())
-        selected_cat = st.selectbox("Select Index / Category:", options=available_categories, key=select_box_key)
-
-        category_stocks = filtered_df[filtered_df['Sector Index'] == selected_cat].sort_values(
-            by='End Rel Vol', ascending=False
-        ).reset_index(drop=True)
-
-        styled_category_stocks = category_stocks.style.map(
-            style_price_change, subset=['Price Change (%)']
-        ).format({'Price Change (%)': '{:+.2f}%'})
-
-        st.dataframe(
-            styled_category_stocks, 
-            column_config=LINK_COLUMN_CONFIG, 
-            use_container_width=True
-        )
-
 def style_price_change(val):
     if isinstance(val, (int, float)):
         if val > 0:
@@ -511,12 +479,13 @@ custom_start_time = next(opt[1] for opt in time_options if opt[0] == selected_st
 custom_end_time = next(opt[1] for opt in time_options if opt[0] == selected_end_label)
 
 live_df = fetch_live_fno_data(stock_universe_mode)
+indices_df = fetch_live_indices_data()
 
 st.title("⚡ NSE Relative Volume & Price Movers")
 st.caption(f"Active Universe: **{stock_universe_mode} ({len(live_df)} Tickers)** | PDH/PDL Scanner: 🟢 **Active** | Refreshed: {now_str} IST")
 
-tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sectors, tab_thematic = st.tabs([
-    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "🏛️ Sector Indices", "🎯 Thematic Indices"
+tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sectors, tab_indices = st.tabs([
+    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📂 Sectors", "📊 Sector & Thematic Indices"
 ])
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
@@ -549,12 +518,76 @@ with tab_day:
         st.markdown("### 🔴 Top 20 Day Losers (% Drop)")
         st.dataframe(losers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
 
-# Sector Indices Tab
+# ==========================================
+# TAB: SECTOR WISE ANALYSIS
+# ==========================================
 with tab_sectors:
+    st.subheader("📂 Sector-Wise Relative Volume & Momentum")
     _, _, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
-    render_category_analysis_ui(full_df, SECTORAL_INDICES, "Sector Index", "sector_select")
 
-# Thematic Indices Tab
-with tab_thematic:
-    _, _, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
-    render_category_analysis_ui(full_df, THEMATIC_INDICES, "Thematic Index", "thematic_select")
+    if not full_df.empty:
+        st.markdown("### 📊 Sector Volume & Price Overview")
+        sector_summary = full_df.groupby('Sector Index').agg(
+            Stock_Count=('Stock Symbol', 'count'),
+            Avg_RelVol=('End Rel Vol', 'mean'),
+            Avg_Price_Change=('Price Change (%)', 'mean')
+        ).reset_index()
+
+        sector_summary['Avg_RelVol'] = sector_summary['Avg_RelVol'].round(2)
+        sector_summary['Avg_Price_Change'] = sector_summary['Avg_Price_Change'].round(2)
+        sector_summary = sector_summary.sort_values(by='Avg_RelVol', ascending=False)
+        
+        sector_summary.columns = ['Sector Index', 'Total Stocks', 'Average Rel Vol', 'Average Price Change (%)']
+        
+        styled_summary = sector_summary.style.map(
+            style_price_change, subset=['Average Price Change (%)']
+        ).format({'Average Price Change (%)': '{:+.2f}%'})
+        
+        st.dataframe(styled_summary, use_container_width=True)
+
+        st.markdown("---")
+
+        st.markdown("### 🎯 Filter Stocks by Sector")
+        all_sectors = sorted(full_df['Sector Index'].unique().tolist())
+        selected_sector = st.selectbox("Select Sector:", options=all_sectors)
+
+        sector_stocks = full_df[full_df['Sector Index'] == selected_sector].sort_values(
+            by='End Rel Vol', ascending=False
+        ).reset_index(drop=True)
+
+        styled_sector_stocks = sector_stocks.style.map(
+            style_price_change, subset=['Price Change (%)']
+        ).format({'Price Change (%)': '{:+.2f}%'})
+
+        st.dataframe(
+            styled_sector_stocks, 
+            column_config=LINK_COLUMN_CONFIG, 
+            use_container_width=True
+        )
+    else:
+        st.info("Loading sector relative volume data...")
+
+# ==========================================
+# NEW TAB: SECTOR & THEMATIC INDICES
+# ==========================================
+with tab_indices:
+    st.subheader("📊 Sectoral & Thematic Indices Relative Volume Tracking")
+    
+    if not indices_df.empty:
+        _, _, indices_tf_df = fetch_day_movers_with_multi_timeframes(indices_df, now_str)
+        
+        # Clean columns for display
+        indices_tf_df = indices_tf_df.drop(columns=['PDH/PDL Status', 'Sector Index'], errors='ignore')
+        indices_tf_df = indices_tf_df.sort_values(by='End Rel Vol', ascending=False).reset_index(drop=True)
+        
+        styled_indices = indices_tf_df.style.map(
+            style_price_change, subset=['Price Change (%)']
+        ).format({'Price Change (%)': '{:+.2f}%'})
+
+        st.dataframe(
+            styled_indices, 
+            column_config=LINK_COLUMN_CONFIG, 
+            use_container_width=True
+        )
+    else:
+        st.info("Fetching Sectoral and Thematic Indices relative volume data...")
