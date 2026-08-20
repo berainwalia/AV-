@@ -642,21 +642,43 @@ with tab_sectors:
 # ==========================================
 with tab_indices:
     st.subheader("📊 Sectoral & Thematic Indices Relative Volume Tracking")
-    
-    if not indices_df.empty:
+
+    # 1. Fetch current stock data
+    live_stocks_df = fetch_live_fno_data(stock_universe_mode="All F&O Stocks")
+
+    if not live_stocks_df.empty:
+        # 2. Compute Sector Aggregations to build indices_df dynamically
+        indices_df = (
+            live_stocks_df.groupby("Sector Index")
+            .agg(
+                Symbol=("Sector Index", "first"),  # Sector Name
+                RelVol=("RelVol", "mean"),          # Average Relative Volume
+                ChangePct=("ChangePct", "mean"),    # Average Price Change %
+            )
+            .reset_index(drop=True)
+        )
+
+        # 3. Calculate multi-timeframe relative volume gains for sectors
         _, _, indices_tf_df = fetch_day_movers_with_multi_timeframes(indices_df, now_str)
-        
-        indices_tf_df = indices_tf_df.drop(columns=['PDH/PDL Status', 'Sector Index'], errors='ignore')
-        indices_tf_df = indices_tf_df.sort_values(by='End Rel Vol', ascending=False).reset_index(drop=True)
-        
+
+        # 4. Clean up columns and sort by End Rel Vol
+        indices_tf_df = indices_tf_df.drop(
+            columns=["PDH/PDL Status", "Sector Index"], errors="ignore"
+        )
+        indices_tf_df = indices_tf_df.sort_values(
+            by="End Rel Vol", ascending=False
+        ).reset_index(drop=True)
+
+        # 5. Apply price styling and render table
         styled_indices = indices_tf_df.style.map(
-            style_price_change, subset=['Price Change (%)']
-        ).format({'Price Change (%)': '{:+.2f}%'})
+            style_price_change, subset=["Price Change (%)"]
+        ).format({"Price Change (%)": "{:+.2f}%"})
 
         st.dataframe(
-            styled_indices, 
-            column_config=LINK_COLUMN_CONFIG, 
-            use_container_width=True
+            styled_indices,
+            column_config=LINK_COLUMN_CONFIG,
+            use_container_width=True,
         )
     else:
-        st.info("Fetching Sectoral and Thematic Indices relative volume data...")
+        st.info("Loading sector relative volume data...")
+        
