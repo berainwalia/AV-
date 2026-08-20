@@ -104,7 +104,7 @@ SECTOR_INDEX_MAP = {
 
 st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
 
-# Updated: Auto-refresh rate reduced from 60000ms (60s) to 30000ms (30s)
+# UI Auto-refresh every 30 seconds
 st_autorefresh(interval=30000, key="datarefresh")
 
 # ==========================================
@@ -170,7 +170,7 @@ def save_snapshot(df, now_str):
 # ==========================================
 # YFINANCE PRE-FETCHING (CORRECTED PDH/PDL)
 # ==========================================
-@st.cache_data(ttl=3600)  # Reduced TTL to 1 hour to prevent stale daily cache issues
+@st.cache_data(ttl=3600)
 def fetch_pdh_pdl_dict(symbol_tuple):
     symbol_list = list(symbol_tuple)
     pdh_pdl_map = {}
@@ -180,7 +180,6 @@ def fetch_pdh_pdl_dict(symbol_tuple):
     yf_symbols = [f"{s}.NS" for s in symbol_list]
     
     try:
-        # Fetch daily history for the last 5 trading days
         data = yf.download(yf_symbols, period="5d", interval="1d", progress=False)
         
         if data.empty:
@@ -189,7 +188,6 @@ def fetch_pdh_pdl_dict(symbol_tuple):
         for sym in symbol_list:
             ticker_yf = f"{sym}.NS"
             try:
-                # Extract High and Low series properly regardless of single vs multi-ticker output structure
                 if len(symbol_list) == 1:
                     df_sym = data[['High', 'Low']].dropna()
                 else:
@@ -200,8 +198,6 @@ def fetch_pdh_pdl_dict(symbol_tuple):
                     else:
                         continue
 
-                # Ensure we have at least 2 complete historical daily candles
-                # iloc[-2] targets the completed Previous Day trading candle
                 if len(df_sym) >= 2:
                     prev_day = df_sym.iloc[-2]
                     pdh = float(prev_day['High'])
@@ -219,7 +215,6 @@ def fetch_pdh_pdl_dict(symbol_tuple):
         print(f"Error fetching PDH/PDL via yfinance: {e}")
 
     return pdh_pdl_map
-
 
 # ==========================================
 # DYNAMIC SCANNER FETCHING
@@ -275,78 +270,34 @@ def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
         return pd.DataFrame()
 
 def fetch_live_indices_data():
-def fetch_sector_indices_comparison(live_df, current_time_str):
-    if live_df.empty:
-        return pd.DataFrame()
-
-    # Read-only SQLite connection string to prevent locking threads
-    conn = sqlite3.connect(f"file:{DB_NAME}?mode=ro", uri=True)
-    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-    cursor = conn.cursor()
-
-    def get_past_relvol(mins):
-        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute(
-            "SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
-            (past_str,)
+    try:
+        df = (
+            Query()
+            .set_markets('india')
+            .select('name', 'relative_volume_10d_calc', 'change', 'close')
+            .get_scanner_data()
         )
-        p_row = cursor.fetchone()
-        if p_row:
-            p_df = pd.read_sql_query(
-                "SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?",
-                conn,
-                params=(p_row[0],)
-            )
-            return dict(zip(p_df['symbol'], p_df['rel_vol']))
-        return {}
+        if isinstance(df, tuple):
+            df = df[1]
 
-    # Extract historical relative volumes for all target timeframes
-    vol_1m = get_past_relvol(1)
-    vol_3m = get_past_relvol(3)
-    vol_5m = get_past_relvol(5)
-    vol_10m = get_past_relvol(10)
-    vol_15m = get_past_relvol(15)
-    conn.close()
+        if df is None or df.empty:
+            return pd.DataFrame()
 
-    df = live_df.copy()
+        df = df[['name', 'relative_volume_10d_calc', 'change']].dropna()
+        df.columns = ['Symbol', 'RelVol', 'ChangePct']
 
-    # Individual stock gain calculations
-    df['+1m Gain'] = df.apply(lambda r: r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+3m Gain'] = df.apply(lambda r: r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+5m Gain'] = df.apply(lambda r: r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+10m Gain'] = df.apply(lambda r: r['RelVol'] - vol_10m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+15m Gain'] = df.apply(lambda r: r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), axis=1)
+        df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
+        df = df[df['Symbol'].isin(INDICES_LIST)].copy()
 
-    # Sector-level aggregation
-    sector_summary = df.groupby('Sector Index').agg(
-        Total_Stocks=('Symbol', 'count'),
-        Avg_Price_Change=('ChangePct', 'mean'),
-        Avg_Rel_Vol=('RelVol', 'mean'),
-        Avg_1m_Gain=('+1m Gain', 'mean'),
-        Avg_3m_Gain=('+3m Gain', 'mean'),
-        Avg_5m_Gain=('+5m Gain', 'mean'),
-        Avg_10m_Gain=('+10m Gain', 'mean'),
-        Avg_15m_Gain=('+15m Gain', 'mean')
-    ).reset_index()
+        df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
+        df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
+        df['Sector Index'] = "Index"
+        df['PDH_Status'] = "N/A"
 
-    # Round numerical outputs
-    sector_summary['Avg Price Change (%)'] = sector_summary['Avg_Price_Change'].round(2)
-    sector_summary['Relative Volume'] = sector_summary['Avg_Rel_Vol'].round(2)
-    sector_summary['+1m Gain'] = sector_summary['Avg_1m_Gain'].round(2)
-    sector_summary['+3m Gain'] = sector_summary['Avg_3m_Gain'].round(2)
-    sector_summary['+5m Gain'] = sector_summary['Avg_5m_Gain'].round(2)
-    sector_summary['+10m Gain'] = sector_summary['Avg_10m_Gain'].round(2)
-    sector_summary['+15m Gain'] = sector_summary['Avg_15m_Gain'].round(2)
-
-    # Sort descending by 5-minute relative volume gain
-    sector_summary = sector_summary.sort_values(by='+5m Gain', ascending=False)
-
-    cols = [
-        'Sector Index', 'Total_Stocks', 'Avg Price Change (%)',
-        'Relative Volume', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
-    ]
-    
-    return sector_summary[cols].reset_index(drop=True)
+        return df.dropna().reset_index(drop=True)
+    except Exception as e:
+        print(f"Error pulling indices data: {e}")
+        return pd.DataFrame()
 
 # ==========================================
 # BACKGROUND AUTOMATIC SNAPSHOT SCHEDULER
@@ -372,7 +323,6 @@ def auto_snapshot_loop():
         except Exception as e:
             print(f"Background Snapshot Exception: {e}")
             
-        # Updated: Background snapshot sleep reduced from 60s to 30s
         time_module.sleep(30)
 
 init_db()
@@ -495,6 +445,65 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
 
     return gainers.reset_index(drop=True), losers.reset_index(drop=True), df_renamed.reset_index(drop=True)
 
+def fetch_sector_indices_comparison(live_df, current_time_str):
+    if live_df.empty:
+        return pd.DataFrame()
+
+    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
+
+    def get_past_relvol(mins):
+        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
+            p_row = cursor.fetchone()
+            if p_row:
+                p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
+                return dict(zip(p_df['symbol'], p_df['rel_vol']))
+        return {}
+
+    vol_1m = get_past_relvol(1)
+    vol_3m = get_past_relvol(3)
+    vol_5m = get_past_relvol(5)
+    vol_10m = get_past_relvol(10)
+    vol_15m = get_past_relvol(15)
+
+    df = live_df.copy()
+
+    df['+1m Gain'] = df.apply(lambda r: r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), axis=1)
+    df['+3m Gain'] = df.apply(lambda r: r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), axis=1)
+    df['+5m Gain'] = df.apply(lambda r: r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), axis=1)
+    df['+10m Gain'] = df.apply(lambda r: r['RelVol'] - vol_10m.get(r['Symbol'], r['RelVol']), axis=1)
+    df['+15m Gain'] = df.apply(lambda r: r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), axis=1)
+
+    sector_summary = df.groupby('Sector Index').agg(
+        Total_Stocks=('Symbol', 'count'),
+        Avg_Price_Change=('ChangePct', 'mean'),
+        Avg_Rel_Vol=('RelVol', 'mean'),
+        Avg_1m_Gain=('+1m Gain', 'mean'),
+        Avg_3m_Gain=('+3m Gain', 'mean'),
+        Avg_5m_Gain=('+5m Gain', 'mean'),
+        Avg_10m_Gain=('+10m Gain', 'mean'),
+        Avg_15m_Gain=('+15m Gain', 'mean')
+    ).reset_index()
+
+    sector_summary['Avg Price Change (%)'] = sector_summary['Avg_Price_Change'].round(2)
+    sector_summary['Relative Volume'] = sector_summary['Avg_Rel_Vol'].round(2)
+    sector_summary['+1m Gain'] = sector_summary['Avg_1m_Gain'].round(2)
+    sector_summary['+3m Gain'] = sector_summary['Avg_3m_Gain'].round(2)
+    sector_summary['+5m Gain'] = sector_summary['Avg_5m_Gain'].round(2)
+    sector_summary['+10m Gain'] = sector_summary['Avg_10m_Gain'].round(2)
+    sector_summary['+15m Gain'] = sector_summary['Avg_15m_Gain'].round(2)
+
+    sector_summary = sector_summary.sort_values(by='Relative Volume', ascending=False)
+
+    cols = [
+        'Sector Index', 'Total_Stocks', 'Avg Price Change (%)',
+        'Relative Volume', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
+    ]
+    
+    return sector_summary[cols].reset_index(drop=True)
+
 def style_price_change(val):
     if isinstance(val, (int, float)):
         if val > 0:
@@ -595,65 +604,59 @@ with tab_day:
 # ==========================================
 with tab_sectors:
     st.subheader("📂 Sector-Wise Relative Volume & Momentum")
-    _, _, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
+    if not live_df.empty:
+        sector_indices_df = fetch_sector_indices_comparison(live_df, now_str)
+        if not sector_indices_df.empty:
+            styled_summary = sector_indices_df.style.map(
+                style_price_change, subset=['Avg Price Change (%)']
+            ).format({'Avg Price Change (%)': '{:+.2f}%'})
+            
+            st.dataframe(styled_summary, use_container_width=True)
 
-    if not full_df.empty:
-        st.markdown("### 📊 Sector Volume & Price Overview")
-        sector_summary = full_df.groupby('Sector Index').agg(
-            Stock_Count=('Stock Symbol', 'count'),
-            Avg_RelVol=('End Rel Vol', 'mean'),
-            Avg_Price_Change=('Price Change (%)', 'mean')
-        ).reset_index()
+            st.markdown("---")
 
-        sector_summary['Avg_RelVol'] = sector_summary['Avg_RelVol'].round(2)
-        sector_summary['Avg_Price_Change'] = sector_summary['Avg_Price_Change'].round(2)
-        sector_summary = sector_summary.sort_values(by='Avg_RelVol', ascending=False)
-        
-        sector_summary.columns = ['Sector Index', 'Total Stocks', 'Average Rel Vol', 'Average Price Change (%)']
-        
-        styled_summary = sector_summary.style.map(
-            style_price_change, subset=['Average Price Change (%)']
-        ).format({'Average Price Change (%)': '{:+.2f}%'})
-        
-        st.dataframe(styled_summary, use_container_width=True)
+            st.markdown("### 🎯 Filter Stocks by Sector")
+            _, _, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
+            if not full_df.empty:
+                all_sectors = sorted(full_df['Sector Index'].unique().tolist())
+                selected_sector = st.selectbox("Select Sector:", options=all_sectors)
 
-        st.markdown("---")
+                sector_stocks = full_df[full_df['Sector Index'] == selected_sector].sort_values(
+                    by='End Rel Vol', ascending=False
+                ).reset_index(drop=True)
 
-        st.markdown("### 🎯 Filter Stocks by Sector")
-        all_sectors = sorted(full_df['Sector Index'].unique().tolist())
-        selected_sector = st.selectbox("Select Sector:", options=all_sectors)
+                styled_sector_stocks = sector_stocks.style.map(
+                    style_price_change, subset=['Price Change (%)']
+                ).format({'Price Change (%)': '{:+.2f}%'})
 
-        sector_stocks = full_df[full_df['Sector Index'] == selected_sector].sort_values(
-            by='End Rel Vol', ascending=False
-        ).reset_index(drop=True)
-
-        styled_sector_stocks = sector_stocks.style.map(
-            style_price_change, subset=['Price Change (%)']
-        ).format({'Price Change (%)': '{:+.2f}%'})
-
-        st.dataframe(
-            styled_sector_stocks, 
-            column_config=LINK_COLUMN_CONFIG, 
-            use_container_width=True
-        )
+                st.dataframe(
+                    styled_sector_stocks, 
+                    column_config=LINK_COLUMN_CONFIG, 
+                    use_container_width=True
+                )
     else:
         st.info("Loading sector relative volume data...")
 
 # ==========================================
 # TAB: SECTOR & THEMATIC INDICES
 # ==========================================
-with tab_sector_indices:
-    st.subheader("📊 Sector & Thematic Indices - Relative Volume Momentum")
-    if not live_data.empty:
-        sector_indices_df = fetch_sector_indices_comparison(live_data, now_str)
-        if not sector_indices_df.empty:
-            st.dataframe(
-                sector_indices_df,
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info("Gathering historical snapshots for sectoral relative volume calculation...")
-    else:
-        st.warning("No live market data available.")
+with tab_indices:
+    st.subheader("📊 Sectoral & Thematic Indices Relative Volume Tracking")
+    
+    if not indices_df.empty:
+        _, _, indices_tf_df = fetch_day_movers_with_multi_timeframes(indices_df, now_str)
         
+        indices_tf_df = indices_tf_df.drop(columns=['PDH/PDL Status', 'Sector Index'], errors='ignore')
+        indices_tf_df = indices_tf_df.sort_values(by='End Rel Vol', ascending=False).reset_index(drop=True)
+        
+        styled_indices = indices_tf_df.style.map(
+            style_price_change, subset=['Price Change (%)']
+        ).format({'Price Change (%)': '{:+.2f}%'})
+
+        st.dataframe(
+            styled_indices, 
+            column_config=LINK_COLUMN_CONFIG, 
+            use_container_width=True
+        )
+    else:
+        st.info("Fetching Sectoral and Thematic Indices relative volume data...")
