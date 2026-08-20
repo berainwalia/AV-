@@ -3,17 +3,25 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta, time
 import pytz
-from tradingview_screener import Query, Column
+import yfinance as yf
+from tradingview_screener import Query
 from streamlit_autorefresh import st_autorefresh
 import threading
 import time as time_module
-import yfinance as yf
 
 # ==========================================
 # CONFIGURATION & SECTOR MAPPINGS
 # ==========================================
 DB_NAME = "relvol_fno_history.db"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
+
+# List of major NSE Sectoral and Thematic Index Tickers for TradingView
+INDICES_LIST = [
+    "NIFTY_BANK", "NIFTY_IT", "NIFTY_AUTO", "NIFTY_PHARMA", "NIFTY_FMCG",
+    "NIFTY_METAL", "NIFTY_REALTY", "NIFTY_ENERGY", "NIFTY_INFRA", "NIFTY_MEDIA",
+    "NIFTY_CONSUMPTION", "NIFTY_CPSE", "NIFTY_PSE", "NIFTY_COMMODITIES", 
+    "NIFTY_MNC", "NIFTY_SERV_SECT", "NIFTY_FIN_SERVICE", "NIFTY_HEALTHCARE"
+]
 
 SECTOR_INDEX_MAP = {
     "360ONE": "NIFTY Fin Service", "ABB": "NIFTY Energy", "ABBOTINDIA": "NIFTY Pharma",
@@ -94,15 +102,13 @@ SECTOR_INDEX_MAP = {
     "ZYDUSLIFE": "NIFTY Healthcare"
 }
 
-VALID_SYMBOLS = set(SECTOR_INDEX_MAP.keys())
+st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
 
-st.set_page_config(page_title="NSE Relative Volume & Price Tracker", layout="wide")
-
-# UI Auto-refresh every 60 seconds
-st_autorefresh(interval=60000, key="datarefresh")
+# Updated: Auto-refresh rate reduced from 60000ms (60s) to 30000ms (30s)
+st_autorefresh(interval=30000, key="datarefresh")
 
 # ==========================================
-# DATABASE HELPER FUNCTIONS
+# THREAD-SAFE DATABASE HELPER FUNCTIONS
 # ==========================================
 def get_db_connection():
     conn = sqlite3.connect(DB_NAME, timeout=30.0, check_same_thread=False)
@@ -129,9 +135,8 @@ def init_db():
                 value TEXT
             )
         """)
-        # Auto-migrate schema if pdh_status column is missing
         cursor.execute("PRAGMA table_info(relvol_snapshots);")
-        columns = [col[1] for col in cursor.fetchall()]
+        columns = [column[1] for column in cursor.fetchall()]
         if "pdh_status" not in columns:
             cursor.execute("ALTER TABLE relvol_snapshots ADD COLUMN pdh_status TEXT;")
         conn.commit()
@@ -141,6 +146,7 @@ def check_and_reset_daily(today_date_str):
         cursor = conn.cursor()
         cursor.execute("SELECT value FROM system_config WHERE key = 'last_reset_date'")
         row = cursor.fetchone()
+        
         if not row or row[0] != today_date_str:
             cursor.execute("DELETE FROM relvol_snapshots")
             cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('last_reset_date', ?)", (today_date_str,))
@@ -152,14 +158,7 @@ def save_snapshot(df, now_str):
     with get_db_connection() as conn:
         cursor = conn.cursor()
         data = [
-            (
-                now_str,
-                row['Symbol'],
-                float(row['RelVol']),
-                float(row['ChangePct']),
-                str(row['Sector Index']),
-                str(row.get('PDH_Status', 'Inside Range ➖'))
-            )
+            (now_str, row['Symbol'], float(row['RelVol']), float(row['ChangePct']), str(row['Sector Index']), str(row['PDH_Status']))
             for _, row in df.iterrows()
         ]
         cursor.executemany("""
@@ -172,41 +171,38 @@ def save_snapshot(df, now_str):
 # YFINANCE PRE-FETCHING (DAILY CACHED)
 # ==========================================
 @st.cache_data(ttl=86400)
-def fetch_pdh_pdl_dict(symbols_list):
-    """Fetches Previous Day High & Low once per day for all symbols via yfinance."""
+def fetch_pdh_pdl_dict(symbol_tuple):
+    symbol_list = list(symbol_tuple)
     pdh_pdl_map = {}
+    yf_symbols = [f"{s}.NS" for s in symbol_list]
+    
     try:
-        yf_tickers = [f"{s}.NS" for s in symbols_list]
-        data = yf.download(yf_tickers, period="5d", interval="1d", group_by="ticker", progress=False)
-        
-        for s in symbols_list:
-            ticker_str = f"{s}.NS"
+        data = yf.download(yf_symbols, period="5d", interval="1d", group_by="ticker", progress=False)
+        for sym in symbol_list:
+            ticker_yf = f"{sym}.NS"
             try:
-                if len(symbols_list) == 1:
-                    df_s = data
-                else:
-                    df_s = data[ticker_str]
-                df_s = df_s.dropna(subset=['High', 'Low'])
-                if len(df_s) >= 2:
-                    prev_row = df_s.iloc[-2]  # Previous Trading Day
-                    pdh_pdl_map[s] = {
-                        'PDH': float(prev_row['High']),
-                        'PDL': float(prev_row['Low'])
+                df_sym = data if len(symbol_list) == 1 else data[ticker_yf]
+                df_clean = df_sym.dropna(subset=['High', 'Low'])
+                if len(df_clean) >= 2:
+                    prev_day = df_clean.iloc[-2]
+                    pdh_pdl_map[sym] = {
+                        'PDH': float(prev_day['High']),
+                        'PDL': float(prev_day['Low'])
                     }
             except Exception:
                 continue
     except Exception as e:
-        print(f"Error pre-fetching PDH/PDL via yfinance: {e}")
+        print(f"Error fetching PDH/PDL via yfinance: {e}")
+        
     return pdh_pdl_map
 
 # ==========================================
 # DYNAMIC SCANNER FETCHING
 # ==========================================
-def fetch_live_fno_data(stock_universe_mode="All F&O Stocks"):
+def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
     try:
-        limit = 200 if stock_universe_mode == "Custom List" else (250 if stock_universe_mode == "All F&O Stocks" else 500)
+        limit = 250 if stock_universe_mode == "F&O Stocks" else 500
         
-        # Query TradingView for live high, low, close prices
         df = (
             Query()
             .set_markets('india')
@@ -216,30 +212,27 @@ def fetch_live_fno_data(stock_universe_mode="All F&O Stocks"):
         )
         if isinstance(df, tuple):
             df = df[1]
+
         if df is None or df.empty:
             return pd.DataFrame()
             
         df = df[['name', 'relative_volume_10d_calc', 'change', 'sector', 'close', 'high', 'low']].dropna(subset=['name', 'relative_volume_10d_calc'])
         df.columns = ['Symbol', 'RelVol', 'ChangePct', 'TV Sector', 'Close', 'High', 'Low']
-        df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
         
-        if stock_universe_mode == "Custom List":
-            df = df[df['Symbol'].isin(VALID_SYMBOLS)].copy()
-
+        df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
         df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
         df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
         df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
         df['High'] = pd.to_numeric(df['High'], errors='coerce')
         df['Low'] = pd.to_numeric(df['Low'], errors='coerce')
 
-        # Calculate Real-Time PDH / PDL Breakout Status
-        all_symbols = df['Symbol'].tolist()
-        pdh_pdl_map = fetch_pdh_pdl_dict(all_symbols)
+        symbols_tuple = tuple(df['Symbol'].tolist())
+        pdh_pdl_map = fetch_pdh_pdl_dict(symbols_tuple)
 
         df['PDH'] = df['Symbol'].apply(lambda s: pdh_pdl_map.get(s, {}).get('PDH', None))
         df['PDL'] = df['Symbol'].apply(lambda s: pdh_pdl_map.get(s, {}).get('PDL', None))
 
-        def evaluate_pdh_pdl(row):
+        def check_pdh_pdl(row):
             if pd.notnull(row['High']) and pd.notnull(row['PDH']) and row['High'] > row['PDH']:
                 return "PDH Cross 🟢"
             elif pd.notnull(row['Low']) and pd.notnull(row['PDL']) and row['Low'] < row['PDL']:
@@ -247,12 +240,43 @@ def fetch_live_fno_data(stock_universe_mode="All F&O Stocks"):
             else:
                 return "Inside Range ➖"
 
-        df['PDH_Status'] = df.apply(evaluate_pdh_pdl, axis=1)
+        df['PDH_Status'] = df.apply(check_pdh_pdl, axis=1)
         df['Sector Index'] = df['Symbol'].map(SECTOR_INDEX_MAP).fillna(df['TV Sector'].fillna("Other Sector"))
-
+        
         return df.dropna(subset=['RelVol', 'ChangePct']).reset_index(drop=True)
+
     except Exception as e:
-        print(f"Error fetching live updates: {e}")
+        print(f"Error pulling stock updates: {e}")
+        return pd.DataFrame()
+
+def fetch_live_indices_data():
+    try:
+        df = (
+            Query()
+            .set_markets('india')
+            .select('name', 'relative_volume_10d_calc', 'change', 'close')
+            .get_scanner_data()
+        )
+        if isinstance(df, tuple):
+            df = df[1]
+
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        df = df[['name', 'relative_volume_10d_calc', 'change']].dropna()
+        df.columns = ['Symbol', 'RelVol', 'ChangePct']
+
+        df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
+        df = df[df['Symbol'].isin(INDICES_LIST)].copy()
+
+        df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
+        df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
+        df['Sector Index'] = "Index"
+        df['PDH_Status'] = "N/A"
+
+        return df.dropna().reset_index(drop=True)
+    except Exception as e:
+        print(f"Error pulling indices data: {e}")
         return pd.DataFrame()
 
 # ==========================================
@@ -262,20 +286,28 @@ def auto_snapshot_loop():
     while True:
         try:
             now_dt = datetime.now(TIMEZONE)
-            if now_dt.weekday() < 5:  # Monday to Friday
+            if now_dt.weekday() < 5:
                 curr_time = now_dt.time()
                 if time(9, 15) <= curr_time <= time(15, 30):
                     now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                     today_date_str = now_dt.strftime("%Y-%m-%d")
+                    
                     check_and_reset_daily(today_date_str)
-                    df = fetch_live_fno_data("All F&O Stocks")
-                    if not df.empty:
-                        save_snapshot(df, now_str)
+                    
+                    df = fetch_live_fno_data("F&O Stocks")
+                    indices_df = fetch_live_indices_data()
+                    combined_df = pd.concat([df, indices_df], ignore_index=True)
+
+                    if not combined_df.empty:
+                        save_snapshot(combined_df, now_str)
         except Exception as e:
-            print(f"Background Thread Exception: {e}")
-        time_module.sleep(60)
+            print(f"Background Snapshot Exception: {e}")
+            
+        # Updated: Background snapshot sleep reduced from 60s to 30s
+        time_module.sleep(30)
 
 init_db()
+
 if "bg_thread_started" not in st.session_state:
     st.session_state["bg_thread_started"] = True
     bg_thread = threading.Thread(target=auto_snapshot_loop, daemon=True)
@@ -287,243 +319,278 @@ if "bg_thread_started" not in st.session_state:
 def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
     with get_db_connection() as conn:
         cursor = conn.cursor()
+        
         cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (end_ts,))
         end_row = cursor.fetchone()
+        
         cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (start_ts,))
         start_row = cursor.fetchone()
-        
+
         if not end_row or not start_row or not end_row[0] or not start_row[0]:
             return pd.DataFrame(), label_name, None, None
-            
-        actual_start_ts, actual_end_ts = start_row[0], end_row[0]
-        df_end = pd.read_sql_query("SELECT symbol, rel_vol, change_pct, sector_index, pdh_status FROM relvol_snapshots WHERE timestamp = ?", conn, params=(actual_end_ts,))
-        df_start = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(actual_start_ts,))
-        
+
+        actual_start_ts = start_row[0]
+        actual_end_ts = end_row[0]
+
+        df_end = pd.read_sql_query(
+            "SELECT symbol, rel_vol, change_pct, sector_index, COALESCE(pdh_status, 'Inside Range ➖') as pdh_status FROM relvol_snapshots WHERE timestamp = ?", 
+            conn, 
+            params=(actual_end_ts,)
+        )
+        df_start = pd.read_sql_query(
+            "SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", 
+            conn, 
+            params=(actual_start_ts,)
+        )
+
     if df_end.empty or df_start.empty:
         return pd.DataFrame(), label_name, actual_start_ts, actual_end_ts
 
     merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
     merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
+
     top = merged.sort_values(by='Gain', ascending=False).head(20).copy()
     top['TradingView Chart'] = top['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
-    
-    top = top[['symbol', 'sector_index', 'pdh_status', 'TradingView Chart', 'change_pct', 'rel_vol_end', 'Gain']].copy()
+
+    top = top[['symbol', 'pdh_status', 'sector_index', 'TradingView Chart', 'change_pct', 'rel_vol_end', 'Gain']].copy()
     top['rel_vol_end'] = top['rel_vol_end'].round(2)
     top['Gain'] = top['Gain'].round(2)
     top['change_pct'] = top['change_pct'].round(2)
-    top.columns = ['Symbol', 'Sector Index', 'PDH/PDL Status', 'Chart Link', 'Price Change %', 'End Rel Vol', label_name]
+
+    top.columns = ['Symbol', 'PDH/PDL Status', 'Sector Index', 'TradingView Chart', 'Price Change %', 'End Rel Vol', label_name]
     return top.reset_index(drop=True), label_name, actual_start_ts, actual_end_ts
+
+def calculate_gain_relative(minutes, current_time_str):
+    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
+    start_str = (curr_dt - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+    df, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, f'+{minutes}m Gain')
+    return df, label
 
 def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
     if live_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
-        
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
     curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-    
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        def get_past_relvol(mins):
-            past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
+
+    def get_past_relvol(mins):
+        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
             cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
             p_row = cursor.fetchone()
             if p_row:
                 p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
                 return dict(zip(p_df['symbol'], p_df['rel_vol']))
-            return {}
+        return {}
 
-        vol_1m = get_past_relvol(1)
-        vol_3m = get_past_relvol(3)
-        vol_5m = get_past_relvol(5)
-        vol_10m = get_past_relvol(10)
-        vol_15m = get_past_relvol(15)
+    vol_1m = get_past_relvol(1)
+    vol_3m = get_past_relvol(3)
+    vol_5m = get_past_relvol(5)
+    vol_10m = get_past_relvol(10)
+    vol_15m = get_past_relvol(15)
 
     df = live_df.copy()
     df['TradingView Chart'] = df['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
+
     df['+1m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), 2), axis=1)
     df['+3m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), 2), axis=1)
     df['+5m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), 2), axis=1)
     df['+10m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_10m.get(r['Symbol'], r['RelVol']), 2), axis=1)
     df['+15m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-    
+
     df['RelVol'] = df['RelVol'].round(2)
     df['ChangePct'] = df['ChangePct'].round(2)
 
     gainers = df.sort_values(by='ChangePct', ascending=False).head(20).copy()
     losers = df.sort_values(by='ChangePct', ascending=True).head(20).copy()
 
-    cols_order = ['Symbol', 'Sector Index', 'PDH_Status', 'TradingView Chart', 'ChangePct', 'RelVol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain']
-    col_names = ['Stock Symbol', 'Sector Index', 'PDH/PDL Status', 'Chart Link', 'Price Change (%)', 'End Rel Vol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain']
+    cols_order = [
+        'Symbol', 'PDH_Status', 'Sector Index', 'TradingView Chart', 'ChangePct',
+        'RelVol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
+    ]
+    col_names = [
+        'Stock Symbol', 'PDH/PDL Status', 'Sector Index', 'TradingView Chart', 'Price Change (%)',
+        'End Rel Vol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
+    ]
 
     if not gainers.empty:
         gainers = gainers[cols_order]
         gainers.columns = col_names
+
     if not losers.empty:
         losers = losers[cols_order]
         losers.columns = col_names
 
-    return gainers.reset_index(drop=True), losers.reset_index(drop=True)
+    df_renamed = df[cols_order].copy()
+    df_renamed.columns = col_names
 
-def fetch_sector_momentum_summary(live_df, current_time_str):
-    if live_df.empty:
-        return pd.DataFrame()
-        
-    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-    
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        def get_past_relvol(mins):
-            past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
-            p_row = cursor.fetchone()
-            if p_row:
-                p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
-                return dict(zip(p_df['symbol'], p_df['rel_vol']))
-            return {}
+    return gainers.reset_index(drop=True), losers.reset_index(drop=True), df_renamed.reset_index(drop=True)
 
-        vol_1m = get_past_relvol(1)
-        vol_3m = get_past_relvol(3)
-        vol_5m = get_past_relvol(5)
-        vol_15m = get_past_relvol(15)
+def style_price_change(val):
+    if isinstance(val, (int, float)):
+        if val > 0:
+            return 'color: #00c853; font-weight: bold;'
+        elif val < 0:
+            return 'color: #ff1744; font-weight: bold;'
+    return ''
 
-    df = live_df.copy()
-    df['+1m Gain'] = df.apply(lambda r: r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+3m Gain'] = df.apply(lambda r: r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+5m Gain'] = df.apply(lambda r: r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['+15m Gain'] = df.apply(lambda r: r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), axis=1)
-    df['Is Advance'] = df['ChangePct'] > 0
+def generate_5min_time_options():
+    time_options = []
+    today_date = datetime.now(TIMEZONE).date()
+    start = datetime.combine(today_date, time(9, 15))
+    end = datetime.combine(today_date, time(15, 30))
+    current = start
+    while current <= end:
+        label = current.strftime('%I:%M %p')
+        time_options.append((label, current.time()))
+        current += timedelta(minutes=5)
+    return time_options
 
-    sector_summary = df.groupby('Sector Index').agg(
-        Total_Stocks=('Symbol', 'count'),
-        Advancing_Stocks=('Is Advance', 'sum'),
-        Avg_Price_Change=('ChangePct', 'mean'),
-        Avg_Rel_Vol=('RelVol', 'mean'),
-        Avg_1m_Gain=('+1m Gain', 'mean'),
-        Avg_3m_Gain=('+3m Gain', 'mean'),
-        Avg_5m_Gain=('+5m Gain', 'mean'),
-        Avg_15m_Gain=('+15m Gain', 'mean')
-    ).reset_index()
-
-    sector_summary['Declining_Stocks'] = sector_summary['Total_Stocks'] - sector_summary['Advancing_Stocks']
-    sector_summary['Breadth Ratio (A/D)'] = sector_summary.apply(lambda r: f"{int(r['Advancing_Stocks'])} : {int(r['Declining_Stocks'])}", axis=1)
-
-    sector_summary['Avg Price Change (%)'] = sector_summary['Avg_Price_Change'].round(2)
-    sector_summary['Avg Rel Vol'] = sector_summary['Avg_Rel_Vol'].round(2)
-    sector_summary['+1m Vol Gain'] = sector_summary['Avg_1m_Gain'].round(2)
-    sector_summary['+3m Vol Gain'] = sector_summary['Avg_3m_Gain'].round(2)
-    sector_summary['+5m Vol Gain'] = sector_summary['Avg_5m_Gain'].round(2)
-    sector_summary['+15m Vol Gain'] = sector_summary['Avg_15m_Gain'].round(2)
-
-    sector_summary = sector_summary.sort_values(by='Avg Price Change (%)', ascending=False)
-    cols = ['Sector Index', 'Total_Stocks', 'Breadth Ratio (A/D)', 'Avg Price Change (%)', 'Avg Rel Vol', '+1m Vol Gain', '+3m Vol Gain', '+5m Vol Gain', '+15m Vol Gain']
-    return sector_summary[cols].reset_index(drop=True)
-
-def fetch_sector_wise_data(live_df, current_time_str):
-    if live_df.empty:
-        return {}
-        
-    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-    
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (current_time_str,))
-        latest_row = cursor.fetchone()
-        
-        if not latest_row:
-            return {}
-            
-        latest_ts = latest_row[0]
-        base_df = pd.read_sql_query("SELECT symbol, rel_vol, change_pct, sector_index, pdh_status FROM relvol_snapshots WHERE timestamp = ?", conn, params=(latest_ts,))
-
-        def get_past_relvol(mins):
-            past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
-            p_row = cursor.fetchone()
-            if p_row:
-                p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
-                return dict(zip(p_df['symbol'], p_df['rel_vol']))
-            return {}
-
-        vol_1m = get_past_relvol(1)
-        vol_3m = get_past_relvol(3)
-        vol_5m = get_past_relvol(5)
-        vol_15m = get_past_relvol(15)
-
-    base_df['Chart Link'] = base_df['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
-    base_df['+1m Gain'] = base_df.apply(lambda r: round(r['rel_vol'] - vol_1m.get(r['symbol'], r['rel_vol']), 2), axis=1)
-    base_df['+3m Gain'] = base_df.apply(lambda r: round(r['rel_vol'] - vol_3m.get(r['symbol'], r['rel_vol']), 2), axis=1)
-    base_df['+5m Gain'] = base_df.apply(lambda r: round(r['rel_vol'] - vol_5m.get(r['symbol'], r['rel_vol']), 2), axis=1)
-    base_df['+15m Gain'] = base_df.apply(lambda r: round(r['rel_vol'] - vol_15m.get(r['symbol'], r['rel_vol']), 2), axis=1)
-    
-    base_df['change_pct'] = base_df['change_pct'].round(2)
-    base_df['rel_vol'] = base_df['rel_vol'].round(2)
-
-    base_df = base_df.rename(columns={
-        'symbol': 'Stock Symbol',
-        'sector_index': 'Sector Index',
-        'pdh_status': 'PDH/PDL Status',
-        'change_pct': 'Price Change (%)',
-        'rel_vol': 'End Rel Vol'
-    })
-
-    cols_order = ['Stock Symbol', 'Sector Index', 'PDH/PDL Status', 'Chart Link', 'Price Change (%)', 'End Rel Vol', '+1m Gain', '+3m Gain', '+5m Gain', '+15m Gain']
-    
-    sector_tables = {}
-    for sector_name, group in base_df.groupby('Sector Index'):
-        sector_tables[sector_name] = group[cols_order].sort_values(by='Price Change (%)', ascending=False).reset_index(drop=True)
-
-    return sector_tables
+LINK_COLUMN_CONFIG = {
+    "TradingView Chart": st.column_config.LinkColumn(
+        "TradingView Chart",
+        display_text="Open Chart 📈"
+    )
+}
 
 # ==========================================
-# STREAMLIT UI LAYOUT
+# DASHBOARD UI
 # ==========================================
-st.title("⚡ NSE Real-time Relative Volume & Price Tracker")
+now_dt = datetime.now(TIMEZONE)
+now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+today_date_str = now_dt.strftime("%Y-%m-%d")
 
-stock_universe = st.radio("Choose Stock Universe:", ["Custom List", "All F&O Stocks", "Nifty 500 Stocks"], horizontal=True)
+st.sidebar.header("📌 Stock Universe Selection")
+stock_universe_mode = st.sidebar.radio(
+    "Choose Stock Universe:",
+    options=["F&O Stocks", "NSE 500"],
+    index=0
+)
 
-live_data = fetch_live_fno_data(stock_universe)
-now_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Custom Time Range")
 
-tab1, tab2, tab3 = st.tabs(["🚀 Day Top Gainers/Losers", "⏱️ Specific Snapshot Comparison", "📊 Sector Performance & Heatmap"])
+time_options = generate_5min_time_options()
+time_labels = [opt[0] for opt in time_options]
 
-with tab1:
-    st.subheader("Live Market Overview (Multi-timeframe Gains)")
-    gainers_df, losers_df = fetch_day_movers_with_multi_timeframes(live_data, now_str)
-    
-    st.markdown("### Top Gainers")
-    st.dataframe(gainers_df, column_config={"Chart Link": st.column_config.LinkColumn("TradingView")}, use_container_width=True)
-    
-    st.markdown("### Top Losers")
-    st.dataframe(losers_df, column_config={"Chart Link": st.column_config.LinkColumn("TradingView")}, use_container_width=True)
+selected_start_label = st.sidebar.selectbox("Select Start Time:", options=time_labels, index=0)
+start_idx = time_labels.index(selected_start_label)
+default_end_idx = min(start_idx + 1, len(time_labels) - 1)
+selected_end_label = st.sidebar.selectbox("Select End Time:", options=time_labels, index=default_end_idx)
 
-with tab2:
-    st.subheader("Historical Interval Gain Comparison")
-    c1, c2 = st.columns(2)
-    with c1:
-        start_time = st.time_input("Start Time", value=time(9, 15))
-    with c2:
-        end_time = st.time_input("End Time", value=datetime.now(TIMEZONE).time())
-        
-    today_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
-    start_ts_str = f"{today_str} {start_time.strftime('%H:%M:%S')}"
-    end_ts_str = f"{today_str} {end_time.strftime('%H:%M:%S')}"
-    
-    if st.button("Compare Snapshot Gain"):
-        df_interval, label, act_start, act_end = calculate_gain_by_exact_timestamps(start_ts_str, end_ts_str, "Interval Gain")
-        if not df_interval.empty:
-            st.info(f"Comparing data from **{act_start}** to **{act_end}**")
-            st.dataframe(df_interval, column_config={"Chart Link": st.column_config.LinkColumn("TradingView")}, use_container_width=True)
+custom_start_time = next(opt[1] for opt in time_options if opt[0] == selected_start_label)
+custom_end_time = next(opt[1] for opt in time_options if opt[0] == selected_end_label)
+
+live_df = fetch_live_fno_data(stock_universe_mode)
+indices_df = fetch_live_indices_data()
+
+st.title("⚡ NSE Relative Volume & Price Movers")
+st.caption(f"Active Universe: **{stock_universe_mode} ({len(live_df)} Tickers)** | PDH/PDL Scanner: 🟢 **Active** | Refreshed: {now_str} IST")
+
+tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sectors, tab_indices = st.tabs([
+    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📂 Sectors", "📊 Sector & Thematic Indices"
+])
+
+for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
+    with tab:
+        st.subheader(f"Top 20 Volume Gainers - Last {mins} Minute(s)")
+        df_gain, gain_col_name = calculate_gain_relative(mins, now_str)
+        if not df_gain.empty:
+            styled_df = df_gain.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+            st.dataframe(styled_df, column_config=LINK_COLUMN_CONFIG, use_container_width=True)
         else:
-            st.warning("No snapshot data available for the selected interval.")
+            st.info("Accumulating minute-by-minute background snapshots... Please wait.")
 
-with tab3:
-    st.subheader("Sector Momentum Overview & Stock Breakdown")
-    sector_summary_df = fetch_sector_momentum_summary(live_data, now_str)
-    st.markdown("### Sector Summary Table")
-    st.dataframe(sector_summary_df, use_container_width=True)
+with tab_custom:
+    st.subheader(f"Top 20 RelVol Gainers: {selected_start_label} ➔ {selected_end_label}")
+    if custom_start_time < custom_end_time:
+        start_ts_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
+        end_ts_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
+        df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(start_ts_str, end_ts_str, label_name="Custom Window Gain")
+        if not df_custom.empty:
+            styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
+            st.dataframe(styled_custom, column_config=LINK_COLUMN_CONFIG, use_container_width=True)
+
+with tab_day:
+    st.subheader("🔥 Top 20 Day Gainers & Losers with Multi-Timeframe Volume Momentum")
+    gainers_df, losers_df, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
+    if not gainers_df.empty:
+        st.markdown("### 🟢 Top 20 Day Gainers (% Increase)")
+        st.dataframe(gainers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
+    if not losers_df.empty:
+        st.markdown("### 🔴 Top 20 Day Losers (% Drop)")
+        st.dataframe(losers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
+
+# ==========================================
+# TAB: SECTOR WISE ANALYSIS
+# ==========================================
+with tab_sectors:
+    st.subheader("📂 Sector-Wise Relative Volume & Momentum")
+    _, _, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
+
+    if not full_df.empty:
+        st.markdown("### 📊 Sector Volume & Price Overview")
+        sector_summary = full_df.groupby('Sector Index').agg(
+            Stock_Count=('Stock Symbol', 'count'),
+            Avg_RelVol=('End Rel Vol', 'mean'),
+            Avg_Price_Change=('Price Change (%)', 'mean')
+        ).reset_index()
+
+        sector_summary['Avg_RelVol'] = sector_summary['Avg_RelVol'].round(2)
+        sector_summary['Avg_Price_Change'] = sector_summary['Avg_Price_Change'].round(2)
+        sector_summary = sector_summary.sort_values(by='Avg_RelVol', ascending=False)
+        
+        sector_summary.columns = ['Sector Index', 'Total Stocks', 'Average Rel Vol', 'Average Price Change (%)']
+        
+        styled_summary = sector_summary.style.map(
+            style_price_change, subset=['Average Price Change (%)']
+        ).format({'Average Price Change (%)': '{:+.2f}%'})
+        
+        st.dataframe(styled_summary, use_container_width=True)
+
+        st.markdown("---")
+
+        st.markdown("### 🎯 Filter Stocks by Sector")
+        all_sectors = sorted(full_df['Sector Index'].unique().tolist())
+        selected_sector = st.selectbox("Select Sector:", options=all_sectors)
+
+        sector_stocks = full_df[full_df['Sector Index'] == selected_sector].sort_values(
+            by='End Rel Vol', ascending=False
+        ).reset_index(drop=True)
+
+        styled_sector_stocks = sector_stocks.style.map(
+            style_price_change, subset=['Price Change (%)']
+        ).format({'Price Change (%)': '{:+.2f}%'})
+
+        st.dataframe(
+            styled_sector_stocks, 
+            column_config=LINK_COLUMN_CONFIG, 
+            use_container_width=True
+        )
+    else:
+        st.info("Loading sector relative volume data...")
+
+# ==========================================
+# TAB: SECTOR & THEMATIC INDICES
+# ==========================================
+with tab_indices:
+    st.subheader("📊 Sectoral & Thematic Indices Relative Volume Tracking")
     
-    st.markdown("### Sector Stock Drilldown")
-    sector_dict = fetch_sector_wise_data(live_data, now_str)
-    if sector_dict:
-        selected_sector = st.selectbox("Select Sector to view stocks:", list(sector_dict.keys()))
-        if selected_sector:
-            st.dataframe(sector_dict[selected_sector], column_config={"Chart Link": st.column_config.LinkColumn("TradingView")}, use_container_width=True)
+    if not indices_df.empty:
+        _, _, indices_tf_df = fetch_day_movers_with_multi_timeframes(indices_df, now_str)
+        
+        # Clean columns for display
+        indices_tf_df = indices_tf_df.drop(columns=['PDH/PDL Status', 'Sector Index'], errors='ignore')
+        indices_tf_df = indices_tf_df.sort_values(by='End Rel Vol', ascending=False).reset_index(drop=True)
+        
+        styled_indices = indices_tf_df.style.map(
+            style_price_change, subset=['Price Change (%)']
+        ).format({'Price Change (%)': '{:+.2f}%'})
+
+        st.dataframe(
+            styled_indices, 
+            column_config=LINK_COLUMN_CONFIG, 
+            use_container_width=True
+        )
+    else:
+        st.info("Fetching Sectoral and Thematic Indices relative volume data...")
