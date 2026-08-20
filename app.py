@@ -3,10 +3,11 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta, time
 import pytz
-from tradingview_screener import Query, Column
+from tradingview_screener import Query
 from streamlit_autorefresh import st_autorefresh
 import threading
 import time as time_module
+import yfinance as yf
 
 # ==========================================
 # CONFIGURATION & SECTOR MAPPINGS
@@ -101,6 +102,36 @@ st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
 st_autorefresh(interval=60000, key="datarefresh")
 
 # ==========================================
+# FETCH PREVIOUS DAY HIGH & LOW LEVELS (YFINANCE)
+# ==========================================
+@st.cache_data(ttl=14400)
+def fetch_pdh_pdl_levels():
+    """Fetches Previous Day High and Previous Day Low via yfinance."""
+    pdh_pdl_data = {}
+    try:
+        symbols = [f"{sym}.NS" for sym in VALID_SYMBOLS]
+        data = yf.download(symbols, period="5d", interval="1d", progress=False)
+        if not data.empty and "High" in data and "Low" in data:
+            highs = data["High"]
+            lows = data["Low"]
+            for sym in VALID_SYMBOLS:
+                ticker = f"{sym}.NS"
+                try:
+                    if ticker in highs.columns and ticker in lows.columns:
+                        sym_highs = highs[ticker].dropna()
+                        sym_lows = lows[ticker].dropna()
+                        if len(sym_highs) >= 2 and len(sym_lows) >= 2:
+                            pdh_pdl_data[sym] = {
+                                "PDH": float(sym_highs.iloc[-2]),
+                                "PDL": float(sym_lows.iloc[-2])
+                            }
+                except Exception:
+                    continue
+    except Exception as e:
+        print(f"Error downloading PDH/PDL: {e}")
+    return pdh_pdl_data
+
+# ==========================================
 # DATABASE FUNCTIONS
 # ==========================================
 def init_db():
@@ -158,10 +189,12 @@ def save_snapshot(df, now_str):
 def fetch_live_fno_data(stock_universe_mode="Custom List"):
     try:
         limit = 200 if stock_universe_mode == "Custom List" else (250 if stock_universe_mode == "All F&O Stocks" else 500)
+        
+        # Pull name, relative volume, change, sector, high, and low levels
         df = (
             Query()
             .set_markets('india')
-            .select('name', 'relative_volume_10d_calc', 'change', 'sector')
+            .select('name', 'relative_volume_10d_calc', 'change', 'sector', 'high', 'low')
             .limit(limit)
             .get_scanner_data()
         )
@@ -170,8 +203,8 @@ def fetch_live_fno_data(stock_universe_mode="Custom List"):
         if df is None or df.empty:
             return pd.DataFrame()
             
-        df = df[['name', 'relative_volume_10d_calc', 'change', 'sector']].dropna(subset=['name', 'relative_volume_10d_calc', 'change'])
-        df.columns = ['Symbol', 'RelVol', 'ChangePct', 'TV Sector']
+        df = df[['name', 'relative_volume_10d_calc', 'change', 'sector', 'high', 'low']].dropna(subset=['name', 'relative_volume_10d_calc', 'change'])
+        df.columns = ['Symbol', 'RelVol', 'ChangePct', 'TV Sector', 'High', 'Low']
         df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
         
         if stock_universe_mode == "Custom List":
@@ -179,7 +212,32 @@ def fetch_live_fno_data(stock_universe_mode="Custom List"):
             
         df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
         df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
+        df['High'] = pd.to_numeric(df['High'], errors='coerce')
+        df['Low'] = pd.to_numeric(df['Low'], errors='coerce')
         df['Sector Index'] = df['Symbol'].map(SECTOR_INDEX_MAP).fillna(df['TV Sector'].fillna("Other Sector"))
+        
+        # Add PDH and PDL Status
+        pdh_pdl_dict = fetch_pdh_pdl_levels()
+        
+        pdh_status = []
+        for _, row in df.iterrows():
+            sym = row['Symbol']
+            h = row['High']
+            l = row['Low']
+            levels = pdh_pdl_dict.get(sym, None)
+            if levels and pd.notna(h) and pd.notna(l):
+                pdh = levels['PDH']
+                pdl = levels['PDL']
+                if h > pdh:
+                    pdh_status.append("PDH Cross 🟢")
+                elif l < pdl:
+                    pdh_status.append("PDL Cross 🔴")
+                else:
+                    pdh_status.append("Within Range ⚪")
+            else:
+                pdh_status.append("N/A ⚪")
+                
+        df['PDH/PDL Status'] = pdh_status
         
         return df.dropna(subset=['RelVol', 'ChangePct']).reset_index(drop=True)
     except Exception as e:
@@ -256,6 +314,7 @@ def fetch_day_movers_with_multi_timeframes(live_df, now_str):
         processed_rows.append({
             'Symbol': sym,
             'Sector Index': row.get('Sector Index', 'Other Sector'),
+            'PDH/PDL Status': row.get('PDH/PDL Status', 'N/A ⚪'),
             'TradingView Chart': tv_link,
             'Price Change %': row['ChangePct'],
             'End Rel Vol': c_vol,
@@ -268,16 +327,14 @@ def fetch_day_movers_with_multi_timeframes(live_df, now_str):
 
     full_df = pd.DataFrame(processed_rows)
 
-    # Sort gainers and losers by relative volume
     gainers = full_df[full_df['Price Change %'] >= 0].sort_values(by='End Rel Vol', ascending=False)
     losers = full_df[full_df['Price Change %'] < 0].sort_values(by='End Rel Vol', ascending=False)
 
     cols_order = [
-        'Symbol', 'Sector Index', 'TradingView Chart', 'Price Change %', 
+        'Symbol', 'Sector Index', 'PDH/PDL Status', 'TradingView Chart', 'Price Change %', 
         'End Rel Vol', '1m Gain', '3m Gain', '5m Gain', '10m Gain', '15m Gain'
     ]
 
-    # SAFE COLUMN SELECTION FIX
     valid_gain_cols = [c for c in cols_order if c in gainers.columns]
     valid_loss_cols = [c for c in cols_order if c in losers.columns]
     valid_full_cols = [c for c in cols_order if c in full_df.columns]
@@ -343,7 +400,7 @@ with tab_indices:
     st.subheader("📊 Sectoral & Thematic Indices Relative Volume Tracking")
 
     if not live_df.empty:
-        # 1. Aggregate stock metrics by Sector Index
+        # Aggregate stock metrics by Sector Index
         indices_df = (
             live_df.groupby("Sector Index")
             .agg(
@@ -354,18 +411,14 @@ with tab_indices:
             .reset_index(drop=True)
         )
 
-        # 2. Add Sector Index column to match expectation
         indices_df["Sector Index"] = indices_df["Symbol"]
 
-        # 3. Calculate timeframe metrics
         _, _, indices_tf_df = fetch_day_movers_with_multi_timeframes(indices_df, now_str)
 
         if not indices_tf_df.empty:
-            # Clean up and sort
-            indices_tf_df = indices_tf_df.drop(columns=["TradingView Chart", "Sector Index"], errors="ignore")
+            indices_tf_df = indices_tf_df.drop(columns=["TradingView Chart", "Sector Index", "PDH/PDL Status"], errors="ignore")
             indices_tf_df = indices_tf_df.sort_values(by="End Rel Vol", ascending=False).reset_index(drop=True)
 
-            # Style and display
             styled_indices = indices_tf_df.style.map(
                 style_price_change, subset=["Price Change %"]
             ).format({"Price Change %": "{:+.2f}%", "End Rel Vol": "{:.2f}"})
