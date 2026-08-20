@@ -168,33 +168,58 @@ def save_snapshot(df, now_str):
         conn.commit()
 
 # ==========================================
-# YFINANCE PRE-FETCHING (DAILY CACHED)
+# YFINANCE PRE-FETCHING (CORRECTED PDH/PDL)
 # ==========================================
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=3600)  # Reduced TTL to 1 hour to prevent stale daily cache issues
 def fetch_pdh_pdl_dict(symbol_tuple):
     symbol_list = list(symbol_tuple)
     pdh_pdl_map = {}
+    if not symbol_list:
+        return pdh_pdl_map
+
     yf_symbols = [f"{s}.NS" for s in symbol_list]
     
     try:
-        data = yf.download(yf_symbols, period="5d", interval="1d", group_by="ticker", progress=False)
+        # Fetch daily history for the last 5 trading days
+        data = yf.download(yf_symbols, period="5d", interval="1d", progress=False)
+        
+        if data.empty:
+            return pdh_pdl_map
+
         for sym in symbol_list:
             ticker_yf = f"{sym}.NS"
             try:
-                df_sym = data if len(symbol_list) == 1 else data[ticker_yf]
-                df_clean = df_sym.dropna(subset=['High', 'Low'])
-                if len(df_clean) >= 2:
-                    prev_day = df_clean.iloc[-2]
-                    pdh_pdl_map[sym] = {
-                        'PDH': float(prev_day['High']),
-                        'PDL': float(prev_day['Low'])
-                    }
+                # Extract High and Low series properly regardless of single vs multi-ticker output structure
+                if len(symbol_list) == 1:
+                    df_sym = data[['High', 'Low']].dropna()
+                else:
+                    if ticker_yf in data['High'].columns:
+                        high_series = data['High'][ticker_yf]
+                        low_series = data['Low'][ticker_yf]
+                        df_sym = pd.DataFrame({'High': high_series, 'Low': low_series}).dropna()
+                    else:
+                        continue
+
+                # Ensure we have at least 2 complete historical daily candles
+                # iloc[-2] targets the completed Previous Day trading candle
+                if len(df_sym) >= 2:
+                    prev_day = df_sym.iloc[-2]
+                    pdh = float(prev_day['High'])
+                    pdl = float(prev_day['Low'])
+                    
+                    if not (pd.isna(pdh) or pd.isna(pdl)):
+                        pdh_pdl_map[sym] = {
+                            'PDH': pdh,
+                            'PDL': pdl
+                        }
             except Exception:
                 continue
+
     except Exception as e:
         print(f"Error fetching PDH/PDL via yfinance: {e}")
-        
+
     return pdh_pdl_map
+
 
 # ==========================================
 # DYNAMIC SCANNER FETCHING
