@@ -656,26 +656,3 @@ def fetch_sector_indices_comparison(live_df, current_time_str):
     ]
 
     return sector_df
-
-# ==========================================
-# STREAMLIT UI: SECTOR & THEMATIC INDICES TAB
-# ==========================================
-with tab_sector_indices:
-    st.subheader("Sector & Thematic Indices - Relative Volume Momentum")
-    
-    if not live_df.empty:
-        current_time_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-        sector_indices_df = fetch_sector_indices_comparison(live_df, current_time_str)
-        
-        if not sector_indices_df.empty:
-            st.dataframe(
-                sector_indices_df,
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info("Calculating sector momentum. Data will appear after the first snapshot interval.")
-    else:
-        st.warning("Fetching live market data...")
-        
-
