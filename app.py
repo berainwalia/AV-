@@ -596,26 +596,86 @@ with tab_sectors:
         st.info("Loading sector relative volume data...")
 
 # ==========================================
-# TAB: SECTOR & THEMATIC INDICES
+# SECTOR & THEMATIC INDICES CALCULATOR
 # ==========================================
-with tab_indices:
-    st.subheader("📊 Sectoral & Thematic Indices Relative Volume Tracking")
-    
-    if not indices_df.empty:
-        _, _, indices_tf_df = fetch_day_movers_with_multi_timeframes(indices_df, now_str)
+def fetch_sector_indices_comparison(live_df, current_time_str):
+    if live_df.empty:
+        return pd.DataFrame()
         
-        # Clean columns for display
-        indices_tf_df = indices_tf_df.drop(columns=['PDH/PDL Status', 'Sector Index'], errors='ignore')
-        indices_tf_df = indices_tf_df.sort_values(by='End Rel Vol', ascending=False).reset_index(drop=True)
-        
-        styled_indices = indices_tf_df.style.map(
-            style_price_change, subset=['Price Change (%)']
-        ).format({'Price Change (%)': '{:+.2f}%'})
+    conn = sqlite3.connect(DB_NAME)
+    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
+    cursor = conn.cursor()
 
-        st.dataframe(
-            styled_indices, 
-            column_config=LINK_COLUMN_CONFIG, 
-            use_container_width=True
+    def get_past_sector_relvol(mins):
+        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            "SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+            (past_str,)
         )
+        p_row = cursor.fetchone()
+        if p_row:
+            p_df = pd.read_sql_query(
+                "SELECT sector_index, AVG(rel_vol) as avg_rel_vol FROM relvol_snapshots WHERE timestamp = ? GROUP BY sector_index",
+                conn,
+                params=(p_row[0],)
+            )
+            return dict(zip(p_df['sector_index'], p_df['avg_rel_vol']))
+        return {}
+
+    # Fetch historic volume metrics for sector indices
+    vol_1m = get_past_sector_relvol(1)
+    vol_3m = get_past_sector_relvol(3)
+    vol_5m = get_past_sector_relvol(5)
+    vol_10m = get_past_sector_relvol(10)
+    vol_15m = get_past_sector_relvol(15)
+    conn.close()
+
+    # Aggregate live stock data to Sector / Thematic Index level
+    sector_df = live_df.groupby('Sector Index').agg(
+        ChangePct=('ChangePct', 'mean'),
+        RelVol=('RelVol', 'mean')
+    ).reset_index()
+
+    # Calculate timeframe gains
+    sector_df['+1m Gain'] = sector_df.apply(lambda r: round(r['RelVol'] - vol_1m.get(r['Sector Index'], r['RelVol']), 2), axis=1)
+    sector_df['+3m Gain'] = sector_df.apply(lambda r: round(r['RelVol'] - vol_3m.get(r['Sector Index'], r['RelVol']), 2), axis=1)
+    sector_df['+5m Gain'] = sector_df.apply(lambda r: round(r['RelVol'] - vol_5m.get(r['Sector Index'], r['RelVol']), 2), axis=1)
+    sector_df['+10m Gain'] = sector_df.apply(lambda r: round(r['RelVol'] - vol_10m.get(r['Sector Index'], r['RelVol']), 2), axis=1)
+    sector_df['+15m Gain'] = sector_df.apply(lambda r: round(r['RelVol'] - vol_15m.get(r['Sector Index'], r['RelVol']), 2), axis=1)
+
+    sector_df['RelVol'] = sector_df['RelVol'].round(2)
+    sector_df['ChangePct'] = sector_df['ChangePct'].round(2)
+
+    # Sort sectors by highest price change %
+    sector_df = sector_df.sort_values(by='ChangePct', ascending=False).reset_index(drop=True)
+
+    # Rename columns to match all other tabs
+    sector_df.columns = [
+        'Sector Index', 'Price Change (%)', 'End Rel Vol',
+        '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
+    ]
+
+    return sector_df
+
+# ==========================================
+# STREAMLIT UI: SECTOR & THEMATIC INDICES TAB
+# ==========================================
+with tab_sector_indices:
+    st.subheader("Sector & Thematic Indices - Relative Volume Momentum")
+    
+    if not live_df.empty:
+        current_time_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+        sector_indices_df = fetch_sector_indices_comparison(live_df, current_time_str)
+        
+        if not sector_indices_df.empty:
+            st.dataframe(
+                sector_indices_df,
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("Calculating sector momentum. Data will appear after the first snapshot interval.")
     else:
-        st.info("Fetching Sectoral and Thematic Indices relative volume data...")
+        st.warning("Fetching live market data...")
+        
+
