@@ -336,4 +336,3 @@ def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
         losers.columns = col_names
         
     return gainers.reset_index(drop=True), losers.reset_index(drop=True)
-    
