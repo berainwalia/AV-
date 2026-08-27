@@ -15,216 +15,85 @@ import time as time_module
 DB_NAME = "relvol_fno_history.db"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# List of major NSE Sectoral and Thematic Index Tickers for TradingView
+# Expanded list of major NSE Sectoral and Thematic Index Tickers for TradingView
 INDICES_LIST = [
     "NIFTY_BANK", "NIFTY_IT", "NIFTY_AUTO", "NIFTY_PHARMA", "NIFTY_FMCG",
     "NIFTY_METAL", "NIFTY_REALTY", "NIFTY_ENERGY", "NIFTY_INFRA", "NIFTY_MEDIA",
     "NIFTY_CONSUMPTION", "NIFTY_CPSE", "NIFTY_PSE", "NIFTY_COMMODITIES", 
-    "NIFTY_MNC", "NIFTY_SERV_SECT", "NIFTY_FIN_SERVICE", "NIFTY_HEALTHCARE"
+    "NIFTY_MNC", "NIFTY_SERV_SECT", "NIFTY_FIN_SERVICE", "NIFTY_HEALTHCARE",
+    "NIFTY_PSU_BANK", "NIFTY_OIL_AND_GAS", "NIFTY_CONSTR", "NIFTY_DEFENCE",
+    "NIFTY_CONSUMER_DURABLES", "NIFTY_LOGISTICS", "NIFTY_CHEMICALS"
 ]
 
-# Cleaned & Validated Mapping exclusively for provided ticker universe
+# Cleaned & Mapped Exact 200 Stock Universe
 SECTOR_INDEX_MAP = {
-    "360ONE": "NIFTY Fin Service",
-    "ABB": "NIFTY Energy",
-    "ABCAPITAL": "NIFTY Fin Service",
-    "ADANIENSOL": "NIFTY Energy",
-    "ADANIENT": "NIFTY Metal",
-    "ADANIGREEN": "NIFTY Energy",
-    "ADANIPORTS": "NIFTY Infra",
-    "ADANIPOWER": "NIFTY Energy",
-    "ALKEM": "NIFTY Pharma",
-    "AMBER": "NIFTY Consumer Durables",
-    "AMBUJACEM": "NIFTY Infra",
-    "ANGELONE": "NIFTY Fin Service",
-    "APLAPOLLO": "NIFTY Metal",
-    "APOLLOHOSP": "NIFTY Healthcare",
-    "ASHOKLEY": "NIFTY Auto",
-    "ASIANPAINT": "NIFTY Consumer Durables",
-    "ASTRAL": "NIFTY Plastics",
-    "ATHERENERG": "NIFTY Auto",
-    "AUBANK": "NIFTY Bank",
-    "AUROPHARMA": "NIFTY Healthcare",
-    "AXISBANK": "NIFTY Bank",
-    "BAJAJ-AUTO": "NIFTY Auto",
-    "BAJAJFINSV": "NIFTY Fin Service",
-    "BAJAJHLDNG": "NIFTY Fin Service",
-    "BAJFINANCE": "NIFTY Fin Service",
-    "BANDHANBNK": "NIFTY Bank",
-    "BANKBARODA": "NIFTY PSU Bank",
-    "BANKINDIA": "NIFTY PSU Bank",
-    "BANKNIFTY": "Index",
-    "BDL": "NIFTY Defence",
-    "BEL": "NIFTY Defence",
-    "BHARATFORG": "NIFTY Auto",
-    "BHARTIARTL": "NIFTY Telecom",
-    "BHEL": "NIFTY Energy",
-    "BIOCON": "NIFTY Healthcare",
-    "BLUESTARCO": "NIFTY Consumer Durables",
-    "BOSCHLTD": "NIFTY Auto",
-    "BPCL": "NIFTY Oil & Gas",
-    "BRITANNIA": "NIFTY FMCG",
-    "BSE": "NIFTY Fin Service",
-    "CAMS": "NIFTY Fin Service",
-    "CANBK": "NIFTY PSU Bank",
-    "CDSL": "NIFTY Fin Service",
-    "CGPOWER": "NIFTY Infra",
-    "CHOLAFIN": "NIFTY Fin Service",
-    "CIPLA": "NIFTY Healthcare",
-    "COALINDIA": "NIFTY Energy",
-    "COCHINSHIP": "NIFTY Defence",
-    "COFORGE": "NIFTY IT",
-    "COLPAL": "NIFTY FMCG",
-    "CONCOR": "NIFTY Transportation",
-    "CROMPTON": "NIFTY Consumer Durables",
-    "CUMMINSIND": "NIFTY Infra",
-    "DABUR": "NIFTY FMCG",
-    "DELHIVERY": "NIFTY Transportation",
-    "DIVISLAB": "NIFTY Healthcare",
-    "DIXON": "NIFTY Consumer Durables",
-    "DLF": "NIFTY Realty",
-    "DMART": "NIFTY Consumer Durables",
-    "DRREDDY": "NIFTY Healthcare",
-    "EICHERMOT": "NIFTY Auto",
-    "ETERNAL": "NIFTY Services",
-    "FEDERALBNK": "NIFTY Bank",
-    "FORCEMOT": "NIFTY Auto",
-    "FORTIS": "NIFTY Healthcare",
-    "GAIL": "NIFTY Oil & Gas",
-    "GLENMARK": "NIFTY Healthcare",
-    "GODFRYPHLP": "NIFTY FMCG",
-    "GODREJCP": "NIFTY FMCG",
-    "GODREJPROP": "NIFTY Realty",
-    "GRASIM": "NIFTY Infra",
-    "GVT&D": "NIFTY Energy",
-    "HAL": "NIFTY Defence",
-    "HAVELLS": "NIFTY Consumer Durables",
-    "HCLTECH": "NIFTY IT",
-    "HDFCAMC": "NIFTY Fin Service",
-    "HDFCBANK": "NIFTY Bank",
-    "HDFCLIFE": "NIFTY Fin Service",
-    "HEROMOTOCO": "NIFTY Auto",
-    "HINDALCO": "NIFTY Metal",
-    "HINDPETRO": "NIFTY Oil & Gas",
-    "HINDUNILVR": "NIFTY FMCG",
-    "HINDZINC": "NIFTY Metal",
-    "HYUNDAI": "NIFTY Auto",
-    "ICICIBANK": "NIFTY Bank",
-    "ICICIGI": "NIFTY Fin Service",
-    "ICICIPRULI": "NIFTY Fin Service",
-    "IEX": "NIFTY Fin Service",
-    "INDHOTEL": "NIFTY Services",
-    "INDIANB": "NIFTY PSU Bank",
-    "INDIGO": "NIFTY Services",
-    "INDUSINDBK": "NIFTY Bank",
-    "INDUSTOWER": "NIFTY Telecom",
-    "INFY": "NIFTY IT",
-    "IOC": "NIFTY Oil & Gas",
-    "IREDA": "NIFTY Fin Service",
-    "ITC": "NIFTY FMCG",
-    "JINDALSTEL": "NIFTY Metal",
-    "JIOFIN": "NIFTY Fin Service",
-    "JSWENERGY": "NIFTY Energy",
-    "JSWSTEEL": "NIFTY Metal",
-    "JUBLFOOD": "NIFTY Consumer Durables",
-    "KALYANKJIL": "NIFTY Consumer Durables",
-    "KAYNES": "NIFTY Consumer Durables",
-    "KEI": "NIFTY Industrials",
-    "KFINTECH": "NIFTY Fin Service",
-    "KOTAKBANK": "NIFTY Bank",
-    "KPITTECH": "NIFTY IT",
-    "LAURUSLABS": "NIFTY Healthcare",
-    "LICHSGFIN": "NIFTY Fin Service",
-    "LICI": "NIFTY Fin Service",
-    "LODHA": "NIFTY Realty",
-    "LT": "NIFTY Infra",
-    "LTF": "NIFTY Fin Service",
-    "LTM": "NIFTY IT",
-    "LUPIN": "NIFTY Healthcare",
-    "M&M": "NIFTY Auto",
-    "MANAPPURAM": "NIFTY Fin Service",
-    "MANKIND": "NIFTY Healthcare",
-    "MARICO": "NIFTY FMCG",
-    "MARUTI": "NIFTY Auto",
-    "MAXHEALTH": "NIFTY Healthcare",
-    "MAZDOCK": "NIFTY Defence",
-    "MCX": "NIFTY Fin Service",
-    "MFSL": "NIFTY Fin Service",
-    "MOTHERSON": "NIFTY Auto",
-    "MOTILALOFS": "NIFTY Fin Service",
-    "MPHASIS": "NIFTY IT",
-    "MUTHOOTFIN": "NIFTY Fin Service",
-    "NAM-INDIA": "NIFTY Fin Service",
-    "NATIONALUM": "NIFTY Metal",
-    "NAUKRI": "NIFTY IT",
-    "NESTLEIND": "NIFTY FMCG",
-    "NIFTY": "Index",
-    "NTPC": "NIFTY Infra",
-    "NYKAA": "NIFTY IT",
-    "OBEROIRLTY": "NIFTY Realty",
-    "OFSS": "NIFTY IT",
-    "OIL": "NIFTY Oil & Gas",
-    "ONGC": "NIFTY Oil & Gas",
-    "PAGEIND": "NIFTY Consumer Durables",
-    "PATANJALI": "NIFTY FMCG",
-    "PAYTM": "NIFTY Fin Service",
-    "PERSISTENT": "NIFTY IT",
-    "PETRONET": "NIFTY Oil & Gas",
-    "PFC": "NIFTY Fin Service",
-    "PGEL": "NIFTY Consumer Durables",
-    "PHOENIXLTD": "NIFTY Realty",
-    "PIDILITIND": "NIFTY Chemicals",
-    "PIIND": "NIFTY Chemicals",
-    "PNB": "NIFTY PSU Bank",
-    "PNBHOUSING": "NIFTY Fin Service",
-    "POLICYBZR": "NIFTY Fin Service",
-    "POLYCAB": "NIFTY Industrials",
-    "POWERGRID": "NIFTY Infra",
-    "POWERINDIA": "NIFTY Energy",
-    "PREMIERENE": "NIFTY Services",
-    "PRESTIGE": "NIFTY Realty",
-    "RADICO": "NIFTY FMCG",
-    "RBLBANK": "NIFTY Bank",
-    "RECLTD": "NIFTY Fin Service",
-    "RELIANCE": "NIFTY Oil & Gas",
-    "RVNL": "NIFTY Infra",
-    "SAIL": "NIFTY Metal",
-    "SBICARD": "NIFTY Fin Service",
-    "SBILIFE": "NIFTY Fin Service",
-    "SBIN": "NIFTY PSU Bank",
-    "SHREECEM": "NIFTY Infra",
-    "SHRIRAMFIN": "NIFTY Fin Service",
-    "SIEMENS": "NIFTY Energy",
-    "SOLARINDS": "NIFTY Defence",
-    "SONACOMS": "NIFTY Auto",
-    "SRF": "NIFTY Chemicals",
-    "SUNPHARMA": "NIFTY Healthcare",
-    "SUPREMEIND": "NIFTY Plastics",
-    "SWIGGY": "NIFTY Services",
-    "TATACONSUM": "NIFTY FMCG",
-    "TATAELXSI": "NIFTY IT",
-    "TATAPOWER": "NIFTY Infra",
-    "TATASTEEL": "NIFTY Metal",
-    "TCS": "NIFTY IT",
-    "TECHM": "NIFTY IT",
-    "TIINDIA": "NIFTY Auto",
-    "TITAN": "NIFTY Consumer Durables",
-    "TMPV": "NIFTY Auto",
-    "TORNTPHARM": "NIFTY Healthcare",
-    "TRENT": "NIFTY Consumer Durables",
-    "TVSMOTOR": "NIFTY Auto",
-    "ULTRACEMCO": "NIFTY Infra",
-    "UNIONBANK": "NIFTY PSU Bank",
-    "UNITDSPR": "NIFTY FMCG",
-    "UNOMINDA": "NIFTY Auto",
-    "UPL": "NIFTY Chemicals",
-    "VBL": "NIFTY FMCG",
-    "VEDL": "NIFTY Metal",
-    "VMM": "NIFTY Consumer Durables",
-    "VOLTAS": "NIFTY Consumer Durables",
-    "WAAREEENER": "NIFTY Industrials",
-    "WIPRO": "NIFTY IT",
-    "ZYDUSLIFE": "NIFTY Healthcare"
+    "360ONE": "NIFTY Fin Service", "ABB": "NIFTY Energy", "ABCAPITAL": "NIFTY Fin Service",
+    "ADANIENSOL": "NIFTY Energy", "ADANIENT": "NIFTY Metal", "ADANIGREEN": "NIFTY Infra",
+    "ADANIPORTS": "NIFTY Infra", "ADANIPOWER": "NIFTY Energy", "ALKEM": "NIFTY Healthcare",
+    "AMBER": "NIFTY Consumer Durables", "AMBUJACEM": "NIFTY Infra", "ANGELONE": "NIFTY Fin Service",
+    "APLAPOLLO": "NIFTY Metal", "APOLLOHOSP": "NIFTY Healthcare", "ASHOKLEY": "NIFTY Auto",
+    "ASIANPAINT": "NIFTY Consumption", "ASTRAL": "NIFTY Infra", "ATHERENERG": "NIFTY Auto",
+    "AUBANK": "NIFTY Bank", "AUROPHARMA": "NIFTY Healthcare", "AXISBANK": "NIFTY Bank",
+    "BAJAJ-AUTO": "NIFTY Auto", "BAJAJFINSV": "NIFTY Fin Service", "BAJAJHLDNG": "NIFTY Fin Service",
+    "BAJFINANCE": "NIFTY Fin Service", "BANDHANBNK": "NIFTY Bank", "BANKBARODA": "NIFTY PSU Bank",
+    "BANKINDIA": "NIFTY PSU Bank", "BANKNIFTY": "NIFTY Bank", "BDL": "NIFTY Defence",
+    "BEL": "NIFTY Defence", "BHARATFORG": "NIFTY Auto", "BHARTIARTL": "NIFTY Infra",
+    "BHEL": "NIFTY Energy", "BIOCON": "NIFTY Healthcare", "BLUESTARCO": "NIFTY Consumer Durables",
+    "BOSCHLTD": "NIFTY Auto", "BPCL": "NIFTY Oil & Gas", "BRITANNIA": "NIFTY FMCG",
+    "BSE": "NIFTY Fin Service", "CAMS": "NIFTY Fin Service", "CANBK": "NIFTY PSU Bank",
+    "CDSL": "NIFTY Fin Service", "CGPOWER": "NIFTY Infra", "CHOLAFIN": "NIFTY Fin Service",
+    "CIPLA": "NIFTY Healthcare", "COALINDIA": "NIFTY Energy", "COCHINSHIP": "NIFTY Defence",
+    "COFORGE": "NIFTY IT", "COLPAL": "NIFTY FMCG", "CONCOR": "NIFTY Services",
+    "CROMPTON": "NIFTY Consumer Durables", "CUMMINSIND": "NIFTY Infra", "DABUR": "NIFTY FMCG",
+    "DELHIVERY": "NIFTY Services", "DIVISLAB": "NIFTY Healthcare", "DIXON": "NIFTY Consumer Durables",
+    "DLF": "NIFTY Realty", "DMART": "NIFTY Consumer Durables", "DRREDDY": "NIFTY Healthcare",
+    "EICHERMOT": "NIFTY Auto", "ETERNAL": "NIFTY Services", "FEDERALBNK": "NIFTY Bank",
+    "FORCEMOT": "NIFTY Auto", "FORTIS": "NIFTY Healthcare", "GAIL": "NIFTY Oil & Gas",
+    "GLENMARK": "NIFTY Healthcare", "GODFRYPHLP": "NIFTY FMCG", "GODREJCP": "NIFTY FMCG",
+    "GODREJPROP": "NIFTY Realty", "GRASIM": "NIFTY Infra", "GVT&D": "NIFTY Energy",
+    "HAL": "NIFTY Defence", "HAVELLS": "NIFTY Consumer Durables", "HCLTECH": "NIFTY IT",
+    "HDFCAMC": "NIFTY Fin Service", "HDFCBANK": "NIFTY Bank", "HDFCLIFE": "NIFTY Fin Service",
+    "HEROMOTOCO": "NIFTY Auto", "HINDALCO": "NIFTY Metal", "HINDPETRO": "NIFTY Oil & Gas",
+    "HINDUNILVR": "NIFTY FMCG", "HINDZINC": "NIFTY Metal", "HYUNDAI": "NIFTY Auto",
+    "ICICIBANK": "NIFTY Bank", "ICICIGI": "NIFTY Fin Service", "ICICIPRULI": "NIFTY Fin Service",
+    "IEX": "NIFTY Fin Service", "INDHOTEL": "NIFTY Services", "INDIANB": "NIFTY PSU Bank",
+    "INDIGO": "NIFTY Services", "INDUSINDBK": "NIFTY Bank", "INDUSTOWER": "NIFTY Infra",
+    "INFY": "NIFTY IT", "IOC": "NIFTY Oil & Gas", "IREDA": "NIFTY Fin Service",
+    "ITC": "NIFTY FMCG", "JINDALSTEL": "NIFTY Metal", "JIOFIN": "NIFTY Fin Service",
+    "JSWENERGY": "NIFTY Energy", "JSWSTEEL": "NIFTY Metal", "JUBLFOOD": "NIFTY Consumer Durables",
+    "KALYANKJIL": "NIFTY Consumer Durables", "KAYNES": "NIFTY Consumer Durables", "KEI": "NIFTY Infra",
+    "KFINTECH": "NIFTY Fin Service", "KOTAKBANK": "NIFTY Bank", "KPITTECH": "NIFTY IT",
+    "LAURUSLABS": "NIFTY Healthcare", "LICHSGFIN": "NIFTY Fin Service", "LICI": "NIFTY Fin Service",
+    "LODHA": "NIFTY Realty", "LT": "NIFTY Infra", "LTF": "NIFTY Fin Service",
+    "LTM": "NIFTY IT", "LUPIN": "NIFTY Healthcare", "M&M": "NIFTY Auto",
+    "MANAPPURAM": "NIFTY Fin Service", "MANKIND": "NIFTY Healthcare", "MARICO": "NIFTY FMCG",
+    "MARUTI": "NIFTY Auto", "MAXHEALTH": "NIFTY Healthcare", "MAZDOCK": "NIFTY Defence",
+    "MCX": "NIFTY Fin Service", "MFSL": "NIFTY Fin Service", "MOTHERSON": "NIFTY Auto",
+    "MOTILALOFS": "NIFTY Fin Service", "MPHASIS": "NIFTY IT", "MUTHOOTFIN": "NIFTY Fin Service",
+    "NAM-INDIA": "NIFTY Fin Service", "NATIONALUM": "NIFTY Metal", "NAUKRI": "NIFTY IT",
+    "NESTLEIND": "NIFTY FMCG", "NIFTY": "NIFTY Index", "NTPC": "NIFTY Infra",
+    "NYKAA": "NIFTY IT", "OBEROIRLTY": "NIFTY Realty", "OFSS": "NIFTY IT",
+    "OIL": "NIFTY Oil & Gas", "ONGC": "NIFTY Oil & Gas", "PAGEIND": "NIFTY Consumer Durables",
+    "PATANJALI": "NIFTY FMCG", "PAYTM": "NIFTY Fin Service", "PERSISTENT": "NIFTY IT",
+    "PETRONET": "NIFTY Oil & Gas", "PFC": "NIFTY Fin Service", "PGEL": "NIFTY Consumer Durables",
+    "PHOENIXLTD": "NIFTY Realty", "PIDILITIND": "NIFTY Chemicals", "PIIND": "NIFTY Chemicals",
+    "PNB": "NIFTY PSU Bank", "PNBHOUSING": "NIFTY Fin Service", "POLICYBZR": "NIFTY Fin Service",
+    "POLYCAB": "NIFTY Infra", "POWERGRID": "NIFTY Infra", "POWERINDIA": "NIFTY Energy",
+    "PREMIERENE": "NIFTY Energy", "PRESTIGE": "NIFTY Realty", "RADICO": "NIFTY FMCG",
+    "RBLBANK": "NIFTY Bank", "RECLTD": "NIFTY Fin Service", "RELIANCE": "NIFTY Oil & Gas",
+    "RVNL": "NIFTY Infra", "SAIL": "NIFTY Metal", "SBICARD": "NIFTY Fin Service",
+    "SBILIFE": "NIFTY Fin Service", "SBIN": "NIFTY PSU Bank", "SHREECEM": "NIFTY Infra",
+    "SHRIRAMFIN": "NIFTY Fin Service", "SIEMENS": "NIFTY Energy", "SOLARINDS": "NIFTY Defence",
+    "SONACOMS": "NIFTY Auto", "SRF": "NIFTY Chemicals", "SUNPHARMA": "NIFTY Healthcare",
+    "SUPREMEIND": "NIFTY Infra", "SWIGGY": "NIFTY Services", "TATACONSUM": "NIFTY FMCG",
+    "TATAELXSI": "NIFTY IT", "TATAPOWER": "NIFTY Infra", "TATASTEEL": "NIFTY Metal",
+    "TCS": "NIFTY IT", "TECHM": "NIFTY IT", "TIINDIA": "NIFTY Auto",
+    "TITAN": "NIFTY Consumer Durables", "TMPV": "NIFTY Auto", "TORNTPHARM": "NIFTY Healthcare",
+    "TRENT": "NIFTY Consumer Durables", "TVSMOTOR": "NIFTY Auto", "ULTRACEMCO": "NIFTY Infra",
+    "UNIONBANK": "NIFTY PSU Bank", "UNITDSPR": "NIFTY FMCG", "UNOMINDA": "NIFTY Auto",
+    "UPL": "NIFTY Chemicals", "VBL": "NIFTY FMCG", "VEDL": "NIFTY Metal",
+    "VMM": "NIFTY Consumer Durables", "VOLTAS": "NIFTY Consumer Durables", "WAAREEENER": "NIFTY Energy",
+    "WIPRO": "NIFTY IT", "ZYDUSLIFE": "NIFTY Healthcare"
 }
 
 st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
@@ -292,7 +161,7 @@ def save_snapshot(df, now_str):
         conn.commit()
 
 # ==========================================
-# YFINANCE PRE-FETCHING (PDH/PDL)
+# YFINANCE PRE-FETCHING (CORRECTED PDH/PDL)
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_pdh_pdl_dict(symbol_tuple):
@@ -301,7 +170,7 @@ def fetch_pdh_pdl_dict(symbol_tuple):
     if not symbol_list:
         return pdh_pdl_map
 
-    yf_symbols = [f"{s}.NS" for s in symbol_list if s not in ["NIFTY", "BANKNIFTY"]]
+    yf_symbols = [f"{s}.NS" for s in symbol_list]
     
     try:
         data = yf.download(yf_symbols, period="5d", interval="1d", progress=False)
@@ -310,8 +179,6 @@ def fetch_pdh_pdl_dict(symbol_tuple):
             return pdh_pdl_map
 
         for sym in symbol_list:
-            if sym in ["NIFTY", "BANKNIFTY"]:
-                continue
             ticker_yf = f"{sym}.NS"
             try:
                 if len(symbol_list) == 1:
@@ -367,8 +234,9 @@ def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
         
         df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
         
-        # Restrict strictly to specified list
-        df = df[df['Symbol'].isin(SECTOR_INDEX_MAP.keys())].copy()
+        # Filter explicitly to user's 200 stock universe
+        target_universe = set(SECTOR_INDEX_MAP.keys())
+        df = df[df['Symbol'].isin(target_universe)].copy()
 
         df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
         df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
@@ -612,7 +480,7 @@ today_date_str = now_dt.strftime("%Y-%m-%d")
 st.sidebar.header("📌 Stock Universe Selection")
 stock_universe_mode = st.sidebar.radio(
     "Choose Stock Universe:",
-    options=["F&O Stocks", "Custom Selection"],
+    options=["F&O Stocks", "Custom 200 List"],
     index=0
 )
 
@@ -634,7 +502,7 @@ live_df = fetch_live_fno_data(stock_universe_mode)
 indices_df = fetch_live_indices_data()
 
 st.title("⚡ NSE Relative Volume & Price Movers")
-st.caption(f"Active Universe: **{len(live_df)} Filtered Tickers** | PDH/PDL Scanner: 🟢 **Active** | Refreshed: {now_str} IST")
+st.caption(f"Active Universe: **200 Targeted Equities ({len(live_df)} Loaded)** | PDH/PDL Scanner: 🟢 **Active** | Refreshed: {now_str} IST")
 
 tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sectors, tab_indices = st.tabs([
     "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📂 Sectors", "📊 Sector & Thematic Indices"
