@@ -214,7 +214,7 @@ def fetch_pdh_pdl_dict(symbol_tuple):
 # ==========================================
 def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
     try:
-        limit = 250 if stock_universe_mode == "F&O Stocks" else 500
+        limit = 500 if stock_universe_mode in ["Custom 200 List", "Nifty 500 Stocks"] else 250
         
         df = (
             Query()
@@ -234,9 +234,10 @@ def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
         
         df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
         
-        # Filter explicitly to user's 200 stock universe
-        target_universe = set(SECTOR_INDEX_MAP.keys())
-        df = df[df['Symbol'].isin(target_universe)].copy()
+        # Apply filtering according to selected stock universe
+        if stock_universe_mode == "Custom 200 List":
+            target_universe = set(SECTOR_INDEX_MAP.keys())
+            df = df[df['Symbol'].isin(target_universe)].copy()
 
         df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
         df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
@@ -259,7 +260,7 @@ def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
                 return "Inside Range ➖"
 
         df['PDH_Status'] = df.apply(check_pdh_pdl, axis=1)
-        df['Sector Index'] = df['Symbol'].map(SECTOR_INDEX_MAP).fillna("Other Sector")
+        df['Sector Index'] = df['Symbol'].map(SECTOR_INDEX_MAP).fillna(df['TV Sector'].fillna("Other Sector"))
         
         return df.dropna(subset=['RelVol', 'ChangePct']).reset_index(drop=True)
 
@@ -312,7 +313,7 @@ def auto_snapshot_loop():
                     
                     check_and_reset_daily(today_date_str)
                     
-                    df = fetch_live_fno_data("F&O Stocks")
+                    df = fetch_live_fno_data("Nifty 500 Stocks")
                     indices_df = fetch_live_indices_data()
                     combined_df = pd.concat([df, indices_df], ignore_index=True)
 
@@ -480,7 +481,7 @@ today_date_str = now_dt.strftime("%Y-%m-%d")
 st.sidebar.header("📌 Stock Universe Selection")
 stock_universe_mode = st.sidebar.radio(
     "Choose Stock Universe:",
-    options=["F&O Stocks", "Custom 200 List"],
+    options=["F&O Stocks", "Custom 200 List", "Nifty 500 Stocks"],
     index=0
 )
 
@@ -502,10 +503,10 @@ live_df = fetch_live_fno_data(stock_universe_mode)
 indices_df = fetch_live_indices_data()
 
 st.title("⚡ NSE Relative Volume & Price Movers")
-st.caption(f"Active Universe: **200 Targeted Equities ({len(live_df)} Loaded)** | PDH/PDL Scanner: 🟢 **Active** | Refreshed: {now_str} IST")
+st.caption(f"Active Universe: **{stock_universe_mode} ({len(live_df)} Loaded)** | PDH/PDL Scanner: 🟢 **Active** | Refreshed: {now_str} IST")
 
-tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_sectors, tab_indices = st.tabs([
-    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "📂 Sectors", "📊 Sector & Thematic Indices"
+tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_nifty500, tab_sectors, tab_indices = st.tabs([
+    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "🌐 Nifty 500", "📂 Sectors", "📊 Sector & Thematic Indices"
 ])
 
 for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
@@ -537,6 +538,29 @@ with tab_day:
     if not losers_df.empty:
         st.markdown("### 🔴 Top 20 Day Losers (% Drop)")
         st.dataframe(losers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
+
+# ==========================================
+# TAB: NIFTY 500 STOCKS
+# ==========================================
+with tab_nifty500:
+    st.subheader("🌐 Nifty 500 Broad Universe Relative Volume Scanner")
+    nifty500_df = fetch_live_fno_data("Nifty 500 Stocks")
+    
+    if not nifty500_df.empty:
+        _, _, nifty500_tf_df = fetch_day_movers_with_multi_timeframes(nifty500_df, now_str)
+        nifty500_tf_df = nifty500_tf_df.sort_values(by='End Rel Vol', ascending=False).reset_index(drop=True)
+        
+        styled_nifty500 = nifty500_tf_df.style.map(
+            style_price_change, subset=['Price Change (%)']
+        ).format({'Price Change (%)': '{:+.2f}%'})
+
+        st.dataframe(
+            styled_nifty500, 
+            column_config=LINK_COLUMN_CONFIG, 
+            use_container_width=True
+        )
+    else:
+        st.info("Fetching Nifty 500 stock universe relative volume data...")
 
 # ==========================================
 # TAB: SECTOR WISE ANALYSIS
