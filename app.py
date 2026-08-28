@@ -212,9 +212,9 @@ def fetch_pdh_pdl_dict(symbol_tuple):
 # ==========================================
 # DYNAMIC SCANNER FETCHING
 # ==========================================
-def fetch_live_fno_data(stock_universe_mode="F&O Stocks"):
+def fetch_live_fno_data(stock_universe_mode="Nifty 500 Stocks"):
     try:
-        limit = 500 if stock_universe_mode in ["Custom 200 List", "Nifty 500 Stocks"] else 250
+        limit = 500
         
         df = (
             Query()
@@ -481,8 +481,8 @@ today_date_str = now_dt.strftime("%Y-%m-%d")
 st.sidebar.header("📌 Stock Universe Selection")
 stock_universe_mode = st.sidebar.radio(
     "Choose Stock Universe:",
-    options=["F&O Stocks", "Custom 200 List", "Nifty 500 Stocks"],
-    index=0
+    options=["Custom 200 List", "Nifty 500 Stocks"],
+    index=1
 )
 
 st.sidebar.markdown("---")
