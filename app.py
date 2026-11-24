@@ -23,6 +23,16 @@ IST = pytz.timezone("Asia/Kolkata")
 CUSTOM_STOCKS_FILE = "custom_stocks.json"
 MAX_CUSTOM_ENTRIES = 700
 
+SIGNAL_OPTIONS = [
+    "🚀 STRONG BULL (PDH + 15m)",
+    "🔻 STRONG BEAR (PDL + 15m)",
+    "🟢 Crossed PDH",
+    "🔴 Crossed PDL",
+    "🟩 Crossed 15m High",
+    "🟥 Crossed 15m Low",
+    "⚪ Inside Range",
+]
+
 DEFAULT_SECTORS = {
     "NIFTY 50": "^NSEI",
     "NIFTY CEMENT": "NIFTY_CEMENT.NS",
@@ -193,19 +203,19 @@ def compute_metrics_for_ticker(df: pd.DataFrame):
     below_orb = ltp < orb_low
 
     if above_pdh and above_orb:
-        signal = "🚀 STRONG BULL (PDH + 15m)"
+        signal = SIGNAL_OPTIONS[0]
     elif below_pdl and below_orb:
-        signal = "🔻 STRONG BEAR (PDL + 15m)"
+        signal = SIGNAL_OPTIONS[1]
     elif above_pdh:
-        signal = "🟢 Crossed PDH"
+        signal = SIGNAL_OPTIONS[2]
     elif below_pdl:
-        signal = "🔴 Crossed PDL"
+        signal = SIGNAL_OPTIONS[3]
     elif above_orb:
-        signal = "🟩 Crossed 15m High"
+        signal = SIGNAL_OPTIONS[4]
     elif below_orb:
-        signal = "🟥 Crossed 15m Low"
+        signal = SIGNAL_OPTIONS[5]
     else:
-        signal = "⚪ Inside Range"
+        signal = SIGNAL_OPTIONS[6]
 
     def pct_change_bars(bars_back: int) -> float:
         if len(df) > bars_back:
@@ -602,16 +612,11 @@ with tab2:
             available_sectors = ["All Sectors"] + sorted(stock_df["Sector"].unique().tolist())
             selected_sec_filter = st.selectbox("Filter by Sector:", available_sectors, key="tab2_sec_filter")
         with f_col2:
+            present_signals = [opt for opt in SIGNAL_OPTIONS if opt in stock_df["Signal"].unique()]
+            signal_filter_choices = ["All Signals"] + present_signals
             selected_sig_filter = st.selectbox(
                 "Filter by Breakout / Signal:",
-                [
-                    "All Signals",
-                    "Only Breakouts (Bullish)",
-                    "Only Breakdowns (Bearish)",
-                    "Dual Breakouts/Breakdowns Only",
-                    "PDH / PDL Crosses Only",
-                    "15m ORB Crosses Only",
-                ],
+                signal_filter_choices,
                 key="tab2_sig_filter",
             )
         with f_col3:
@@ -620,7 +625,8 @@ with tab2:
         view_t2 = stock_df.copy()
         if selected_sec_filter != "All Sectors":
             view_t2 = view_t2[view_t2["Sector"] == selected_sec_filter]
-        view_t2 = apply_signal_filter(view_t2, selected_sig_filter)
+        if selected_sig_filter != "All Signals":
+            view_t2 = view_t2[view_t2["Signal"] == selected_sig_filter]
         if search_stock.strip():
             q = search_stock.strip().upper()
             view_t2 = view_t2[view_t2["Stock"].str.upper().str.contains(q, na=False)]
