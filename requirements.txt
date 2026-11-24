@@ -1,6 +1,5 @@
 streamlit
+yfinance
 pandas
 pytz
-yfinance
-tradingview-screener
 streamlit-autorefresh
