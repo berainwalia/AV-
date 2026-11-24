@@ -1,636 +1,647 @@
-import streamlit as st
+import json
+import os
+import uuid
+from datetime import datetime, time
+from io import StringIO
+
 import pandas as pd
-import sqlite3
-from datetime import datetime, timedelta, time
 import pytz
+import streamlit as st
 import yfinance as yf
-from tradingview_screener import Query
 from streamlit_autorefresh import st_autorefresh
-import threading
-import time as time_module
 
-# ==========================================
-# CONFIGURATION & SECTOR MAPPINGS
-# ==========================================
-DB_NAME = "relvol_fno_history.db"
-TIMEZONE = pytz.timezone("Asia/Kolkata")
-
-# Expanded list of major NSE Sectoral and Thematic Index Tickers for TradingView
-INDICES_LIST = [
-    "NIFTY_BANK", "NIFTY_IT", "NIFTY_AUTO", "NIFTY_PHARMA", "NIFTY_FMCG",
-    "NIFTY_METAL", "NIFTY_REALTY", "NIFTY_ENERGY", "NIFTY_INFRA", "NIFTY_MEDIA",
-    "NIFTY_CONSUMPTION", "NIFTY_CPSE", "NIFTY_PSE", "NIFTY_COMMODITIES", 
-    "NIFTY_MNC", "NIFTY_SERV_SECT", "NIFTY_FIN_SERVICE", "NIFTY_HEALTHCARE",
-    "NIFTY_PSU_BANK", "NIFTY_OIL_AND_GAS", "NIFTY_CONSTR", "NIFTY_DEFENCE",
-    "NIFTY_CONSUMER_DURABLES", "NIFTY_LOGISTICS", "NIFTY_CHEMICALS"
-]
-
-# Cleaned & Mapped Exact 200 Stock Universe
-SECTOR_INDEX_MAP = {
-    "360ONE": "NIFTY Fin Service", "ABB": "NIFTY Energy", "ABCAPITAL": "NIFTY Fin Service",
-    "ADANIENSOL": "NIFTY Energy", "ADANIENT": "NIFTY Metal", "ADANIGREEN": "NIFTY Infra",
-    "ADANIPORTS": "NIFTY Infra", "ADANIPOWER": "NIFTY Energy", "ALKEM": "NIFTY Healthcare",
-    "AMBER": "NIFTY Consumer Durables", "AMBUJACEM": "NIFTY Infra", "ANGELONE": "NIFTY Fin Service",
-    "APLAPOLLO": "NIFTY Metal", "APOLLOHOSP": "NIFTY Healthcare", "ASHOKLEY": "NIFTY Auto",
-    "ASIANPAINT": "NIFTY Consumption", "ASTRAL": "NIFTY Infra", "ATHERENERG": "NIFTY Auto",
-    "AUBANK": "NIFTY Bank", "AUROPHARMA": "NIFTY Healthcare", "AXISBANK": "NIFTY Bank",
-    "BAJAJ-AUTO": "NIFTY Auto", "BAJAJFINSV": "NIFTY Fin Service", "BAJAJHLDNG": "NIFTY Fin Service",
-    "BAJFINANCE": "NIFTY Fin Service", "BANDHANBNK": "NIFTY Bank", "BANKBARODA": "NIFTY PSU Bank",
-    "BANKINDIA": "NIFTY PSU Bank", "BANKNIFTY": "NIFTY Bank", "BDL": "NIFTY Defence",
-    "BEL": "NIFTY Defence", "BHARATFORG": "NIFTY Auto", "BHARTIARTL": "NIFTY Infra",
-    "BHEL": "NIFTY Energy", "BIOCON": "NIFTY Healthcare", "BLUESTARCO": "NIFTY Consumer Durables",
-    "BOSCHLTD": "NIFTY Auto", "BPCL": "NIFTY Oil & Gas", "BRITANNIA": "NIFTY FMCG",
-    "BSE": "NIFTY Fin Service", "CAMS": "NIFTY Fin Service", "CANBK": "NIFTY PSU Bank",
-    "CDSL": "NIFTY Fin Service", "CGPOWER": "NIFTY Infra", "CHOLAFIN": "NIFTY Fin Service",
-    "CIPLA": "NIFTY Healthcare", "COALINDIA": "NIFTY Energy", "COCHINSHIP": "NIFTY Defence",
-    "COFORGE": "NIFTY IT", "COLPAL": "NIFTY FMCG", "CONCOR": "NIFTY Services",
-    "CROMPTON": "NIFTY Consumer Durables", "CUMMINSIND": "NIFTY Infra", "DABUR": "NIFTY FMCG",
-    "DELHIVERY": "NIFTY Services", "DIVISLAB": "NIFTY Healthcare", "DIXON": "NIFTY Consumer Durables",
-    "DLF": "NIFTY Realty", "DMART": "NIFTY Consumer Durables", "DRREDDY": "NIFTY Healthcare",
-    "EICHERMOT": "NIFTY Auto", "ETERNAL": "NIFTY Services", "FEDERALBNK": "NIFTY Bank",
-    "FORCEMOT": "NIFTY Auto", "FORTIS": "NIFTY Healthcare", "GAIL": "NIFTY Oil & Gas",
-    "GLENMARK": "NIFTY Healthcare", "GODFRYPHLP": "NIFTY FMCG", "GODREJCP": "NIFTY FMCG",
-    "GODREJPROP": "NIFTY Realty", "GRASIM": "NIFTY Infra", "GVT&D": "NIFTY Energy",
-    "HAL": "NIFTY Defence", "HAVELLS": "NIFTY Consumer Durables", "HCLTECH": "NIFTY IT",
-    "HDFCAMC": "NIFTY Fin Service", "HDFCBANK": "NIFTY Bank", "HDFCLIFE": "NIFTY Fin Service",
-    "HEROMOTOCO": "NIFTY Auto", "HINDALCO": "NIFTY Metal", "HINDPETRO": "NIFTY Oil & Gas",
-    "HINDUNILVR": "NIFTY FMCG", "HINDZINC": "NIFTY Metal", "HYUNDAI": "NIFTY Auto",
-    "ICICIBANK": "NIFTY Bank", "ICICIGI": "NIFTY Fin Service", "ICICIPRULI": "NIFTY Fin Service",
-    "IEX": "NIFTY Fin Service", "INDHOTEL": "NIFTY Services", "INDIANB": "NIFTY PSU Bank",
-    "INDIGO": "NIFTY Services", "INDUSINDBK": "NIFTY Bank", "INDUSTOWER": "NIFTY Infra",
-    "INFY": "NIFTY IT", "IOC": "NIFTY Oil & Gas", "IREDA": "NIFTY Fin Service",
-    "ITC": "NIFTY FMCG", "JINDALSTEL": "NIFTY Metal", "JIOFIN": "NIFTY Fin Service",
-    "JSWENERGY": "NIFTY Energy", "JSWSTEEL": "NIFTY Metal", "JUBLFOOD": "NIFTY Consumer Durables",
-    "KALYANKJIL": "NIFTY Consumer Durables", "KAYNES": "NIFTY Consumer Durables", "KEI": "NIFTY Infra",
-    "KFINTECH": "NIFTY Fin Service", "KOTAKBANK": "NIFTY Bank", "KPITTECH": "NIFTY IT",
-    "LAURUSLABS": "NIFTY Healthcare", "LICHSGFIN": "NIFTY Fin Service", "LICI": "NIFTY Fin Service",
-    "LODHA": "NIFTY Realty", "LT": "NIFTY Infra", "LTF": "NIFTY Fin Service",
-    "LTM": "NIFTY IT", "LUPIN": "NIFTY Healthcare", "M&M": "NIFTY Auto",
-    "MANAPPURAM": "NIFTY Fin Service", "MANKIND": "NIFTY Healthcare", "MARICO": "NIFTY FMCG",
-    "MARUTI": "NIFTY Auto", "MAXHEALTH": "NIFTY Healthcare", "MAZDOCK": "NIFTY Defence",
-    "MCX": "NIFTY Fin Service", "MFSL": "NIFTY Fin Service", "MOTHERSON": "NIFTY Auto",
-    "MOTILALOFS": "NIFTY Fin Service", "MPHASIS": "NIFTY IT", "MUTHOOTFIN": "NIFTY Fin Service",
-    "NAM-INDIA": "NIFTY Fin Service", "NATIONALUM": "NIFTY Metal", "NAUKRI": "NIFTY IT",
-    "NESTLEIND": "NIFTY FMCG", "NIFTY": "NIFTY Index", "NTPC": "NIFTY Infra",
-    "NYKAA": "NIFTY IT", "OBEROIRLTY": "NIFTY Realty", "OFSS": "NIFTY IT",
-    "OIL": "NIFTY Oil & Gas", "ONGC": "NIFTY Oil & Gas", "PAGEIND": "NIFTY Consumer Durables",
-    "PATANJALI": "NIFTY FMCG", "PAYTM": "NIFTY Fin Service", "PERSISTENT": "NIFTY IT",
-    "PETRONET": "NIFTY Oil & Gas", "PFC": "NIFTY Fin Service", "PGEL": "NIFTY Consumer Durables",
-    "PHOENIXLTD": "NIFTY Realty", "PIDILITIND": "NIFTY Chemicals", "PIIND": "NIFTY Chemicals",
-    "PNB": "NIFTY PSU Bank", "PNBHOUSING": "NIFTY Fin Service", "POLICYBZR": "NIFTY Fin Service",
-    "POLYCAB": "NIFTY Infra", "POWERGRID": "NIFTY Infra", "POWERINDIA": "NIFTY Energy",
-    "PREMIERENE": "NIFTY Energy", "PRESTIGE": "NIFTY Realty", "RADICO": "NIFTY FMCG",
-    "RBLBANK": "NIFTY Bank", "RECLTD": "NIFTY Fin Service", "RELIANCE": "NIFTY Oil & Gas",
-    "RVNL": "NIFTY Infra", "SAIL": "NIFTY Metal", "SBICARD": "NIFTY Fin Service",
-    "SBILIFE": "NIFTY Fin Service", "SBIN": "NIFTY PSU Bank", "SHREECEM": "NIFTY Infra",
-    "SHRIRAMFIN": "NIFTY Fin Service", "SIEMENS": "NIFTY Energy", "SOLARINDS": "NIFTY Defence",
-    "SONACOMS": "NIFTY Auto", "SRF": "NIFTY Chemicals", "SUNPHARMA": "NIFTY Healthcare",
-    "SUPREMEIND": "NIFTY Infra", "SWIGGY": "NIFTY Services", "TATACONSUM": "NIFTY FMCG",
-    "TATAELXSI": "NIFTY IT", "TATAPOWER": "NIFTY Infra", "TATASTEEL": "NIFTY Metal",
-    "TCS": "NIFTY IT", "TECHM": "NIFTY IT", "TIINDIA": "NIFTY Auto",
-    "TITAN": "NIFTY Consumer Durables", "TMPV": "NIFTY Auto", "TORNTPHARM": "NIFTY Healthcare",
-    "TRENT": "NIFTY Consumer Durables", "TVSMOTOR": "NIFTY Auto", "ULTRACEMCO": "NIFTY Infra",
-    "UNIONBANK": "NIFTY PSU Bank", "UNITDSPR": "NIFTY FMCG", "UNOMINDA": "NIFTY Auto",
-    "UPL": "NIFTY Chemicals", "VBL": "NIFTY FMCG", "VEDL": "NIFTY Metal",
-    "VMM": "NIFTY Consumer Durables", "VOLTAS": "NIFTY Consumer Durables", "WAAREEENER": "NIFTY Energy",
-    "WIPRO": "NIFTY IT", "ZYDUSLIFE": "NIFTY Healthcare"
-}
-
-st.set_page_config(page_title="NSE Relative Volume Tracker", layout="wide")
-
-st_autorefresh(interval=30000, key="datarefresh")
-
-# ==========================================
-# THREAD-SAFE DATABASE HELPER FUNCTIONS
-# ==========================================
-def get_db_connection():
-    conn = sqlite3.connect(DB_NAME, timeout=30.0, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    return conn
-
-def init_db():
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS relvol_snapshots (
-                timestamp TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                rel_vol REAL NOT NULL,
-                change_pct REAL,
-                sector_index TEXT,
-                pdh_status TEXT,
-                PRIMARY KEY (timestamp, symbol)
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS system_config (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        cursor.execute("PRAGMA table_info(relvol_snapshots);")
-        columns = [column[1] for column in cursor.fetchall()]
-        if "pdh_status" not in columns:
-            cursor.execute("ALTER TABLE relvol_snapshots ADD COLUMN pdh_status TEXT;")
-        conn.commit()
-
-def check_and_reset_daily(today_date_str):
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT value FROM system_config WHERE key = 'last_reset_date'")
-        row = cursor.fetchone()
-        
-        if not row or row[0] != today_date_str:
-            cursor.execute("DELETE FROM relvol_snapshots")
-            cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('last_reset_date', ?)", (today_date_str,))
-            conn.commit()
-
-def save_snapshot(df, now_str):
-    if df.empty:
-        return
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        data = [
-            (now_str, row['Symbol'], float(row['RelVol']), float(row['ChangePct']), str(row['Sector Index']), str(row['PDH_Status']))
-            for _, row in df.iterrows()
-        ]
-        cursor.executemany("""
-            INSERT OR REPLACE INTO relvol_snapshots (timestamp, symbol, rel_vol, change_pct, sector_index, pdh_status)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, data)
-        conn.commit()
-
-# ==========================================
-# YFINANCE PRE-FETCHING (CORRECTED PDH/PDL)
-# ==========================================
-@st.cache_data(ttl=3600)
-def fetch_pdh_pdl_dict(symbol_tuple):
-    symbol_list = list(symbol_tuple)
-    pdh_pdl_map = {}
-    if not symbol_list:
-        return pdh_pdl_map
-
-    yf_symbols = [f"{s}.NS" for s in symbol_list]
-    
-    try:
-        data = yf.download(yf_symbols, period="5d", interval="1d", progress=False)
-        
-        if data.empty:
-            return pdh_pdl_map
-
-        for sym in symbol_list:
-            ticker_yf = f"{sym}.NS"
-            try:
-                if len(symbol_list) == 1:
-                    df_sym = data[['High', 'Low']].dropna()
-                else:
-                    if ticker_yf in data['High'].columns:
-                        high_series = data['High'][ticker_yf]
-                        low_series = data['Low'][ticker_yf]
-                        df_sym = pd.DataFrame({'High': high_series, 'Low': low_series}).dropna()
-                    else:
-                        continue
-
-                if len(df_sym) >= 2:
-                    prev_day = df_sym.iloc[-2]
-                    pdh = float(prev_day['High'])
-                    pdl = float(prev_day['Low'])
-                    
-                    if not (pd.isna(pdh) or pd.isna(pdl)):
-                        pdh_pdl_map[sym] = {
-                            'PDH': pdh,
-                            'PDL': pdl
-                        }
-            except Exception:
-                continue
-
-    except Exception as e:
-        print(f"Error fetching PDH/PDL via yfinance: {e}")
-
-    return pdh_pdl_map
-
-# ==========================================
-# DYNAMIC SCANNER FETCHING
-# ==========================================
-def fetch_live_fno_data(stock_universe_mode="Nifty 500 Stocks"):
-    try:
-        limit = 500
-        
-        df = (
-            Query()
-            .set_markets('india')
-            .select('name', 'relative_volume_10d_calc', 'change', 'sector', 'close', 'high', 'low')
-            .limit(limit)
-            .get_scanner_data()
-        )
-        if isinstance(df, tuple):
-            df = df[1]
-
-        if df is None or df.empty:
-            return pd.DataFrame()
-            
-        df = df[['name', 'relative_volume_10d_calc', 'change', 'sector', 'close', 'high', 'low']].dropna(subset=['name', 'relative_volume_10d_calc'])
-        df.columns = ['Symbol', 'RelVol', 'ChangePct', 'TV Sector', 'Close', 'High', 'Low']
-        
-        df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
-        
-        # Apply filtering according to selected stock universe
-        if stock_universe_mode == "Custom 200 List":
-            target_universe = set(SECTOR_INDEX_MAP.keys())
-            df = df[df['Symbol'].isin(target_universe)].copy()
-
-        df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
-        df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
-        df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
-        df['High'] = pd.to_numeric(df['High'], errors='coerce')
-        df['Low'] = pd.to_numeric(df['Low'], errors='coerce')
-
-        symbols_tuple = tuple(df['Symbol'].tolist())
-        pdh_pdl_map = fetch_pdh_pdl_dict(symbols_tuple)
-
-        df['PDH'] = df['Symbol'].apply(lambda s: pdh_pdl_map.get(s, {}).get('PDH', None))
-        df['PDL'] = df['Symbol'].apply(lambda s: pdh_pdl_map.get(s, {}).get('PDL', None))
-
-        def check_pdh_pdl(row):
-            if pd.notnull(row['High']) and pd.notnull(row['PDH']) and row['High'] > row['PDH']:
-                return "PDH Cross 🟢"
-            elif pd.notnull(row['Low']) and pd.notnull(row['PDL']) and row['Low'] < row['PDL']:
-                return "PDL Cross 🔴"
-            else:
-                return "Inside Range ➖"
-
-        df['PDH_Status'] = df.apply(check_pdh_pdl, axis=1)
-        df['Sector Index'] = df['Symbol'].map(SECTOR_INDEX_MAP).fillna(df['TV Sector'].fillna("Other Sector"))
-        
-        return df.dropna(subset=['RelVol', 'ChangePct']).reset_index(drop=True)
-
-    except Exception as e:
-        print(f"Error pulling stock updates: {e}")
-        return pd.DataFrame()
-
-def fetch_live_indices_data():
-    try:
-        df = (
-            Query()
-            .set_markets('india')
-            .select('name', 'relative_volume_10d_calc', 'change', 'close')
-            .get_scanner_data()
-        )
-        if isinstance(df, tuple):
-            df = df[1]
-
-        if df is None or df.empty:
-            return pd.DataFrame()
-
-        df = df[['name', 'relative_volume_10d_calc', 'change']].dropna()
-        df.columns = ['Symbol', 'RelVol', 'ChangePct']
-
-        df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
-        df = df[df['Symbol'].isin(INDICES_LIST)].copy()
-
-        df['RelVol'] = pd.to_numeric(df['RelVol'], errors='coerce')
-        df['ChangePct'] = pd.to_numeric(df['ChangePct'], errors='coerce')
-        df['Sector Index'] = "Index"
-        df['PDH_Status'] = "N/A"
-
-        return df.dropna().reset_index(drop=True)
-    except Exception as e:
-        print(f"Error pulling indices data: {e}")
-        return pd.DataFrame()
-
-# ==========================================
-# BACKGROUND AUTOMATIC SNAPSHOT SCHEDULER
-# ==========================================
-def auto_snapshot_loop():
-    while True:
-        try:
-            now_dt = datetime.now(TIMEZONE)
-            if now_dt.weekday() < 5:
-                curr_time = now_dt.time()
-                if time(9, 15) <= curr_time <= time(15, 30):
-                    now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    today_date_str = now_dt.strftime("%Y-%m-%d")
-                    
-                    check_and_reset_daily(today_date_str)
-                    
-                    df = fetch_live_fno_data("Nifty 500 Stocks")
-                    indices_df = fetch_live_indices_data()
-                    combined_df = pd.concat([df, indices_df], ignore_index=True)
-
-                    if not combined_df.empty:
-                        save_snapshot(combined_df, now_str)
-        except Exception as e:
-            print(f"Background Snapshot Exception: {e}")
-            
-        time_module.sleep(30)
-
-init_db()
-
-if "bg_thread_started" not in st.session_state:
-    st.session_state["bg_thread_started"] = True
-    bg_thread = threading.Thread(target=auto_snapshot_loop, daemon=True)
-    bg_thread.start()
-
-# ==========================================
-# CALCULATIONS & PROCESSING
-# ==========================================
-def calculate_gain_by_exact_timestamps(start_ts, end_ts, label_name="Gain"):
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (end_ts,))
-        end_row = cursor.fetchone()
-        
-        cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (start_ts,))
-        start_row = cursor.fetchone()
-
-        if not end_row or not start_row or not end_row[0] or not start_row[0]:
-            return pd.DataFrame(), label_name, None, None
-
-        actual_start_ts = start_row[0]
-        actual_end_ts = end_row[0]
-
-        df_end = pd.read_sql_query(
-            "SELECT symbol, rel_vol, change_pct, sector_index, COALESCE(pdh_status, 'Inside Range ➖') as pdh_status FROM relvol_snapshots WHERE timestamp = ?", 
-            conn, 
-            params=(actual_end_ts,)
-        )
-        df_start = pd.read_sql_query(
-            "SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", 
-            conn, 
-            params=(actual_start_ts,)
-        )
-
-    if df_end.empty or df_start.empty:
-        return pd.DataFrame(), label_name, actual_start_ts, actual_end_ts
-
-    merged = pd.merge(df_end, df_start, on='symbol', suffixes=('_end', '_start'))
-    merged['Gain'] = merged['rel_vol_end'] - merged['rel_vol_start']
-
-    top = merged.sort_values(by='Gain', ascending=False).head(20).copy()
-    top['TradingView Chart'] = top['symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
-
-    top = top[['symbol', 'pdh_status', 'sector_index', 'TradingView Chart', 'change_pct', 'rel_vol_end', 'Gain']].copy()
-    top['rel_vol_end'] = top['rel_vol_end'].round(2)
-    top['Gain'] = top['Gain'].round(2)
-    top['change_pct'] = top['change_pct'].round(2)
-
-    top.columns = ['Symbol', 'PDH/PDL Status', 'Sector Index', 'TradingView Chart', 'Price Change %', 'End Rel Vol', label_name]
-    return top.reset_index(drop=True), label_name, actual_start_ts, actual_end_ts
-
-def calculate_gain_relative(minutes, current_time_str):
-    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-    start_str = (curr_dt - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
-    df, label, _, _ = calculate_gain_by_exact_timestamps(start_str, current_time_str, f'+{minutes}m Gain')
-    return df, label
-
-def fetch_day_movers_with_multi_timeframes(live_df, current_time_str):
-    if live_df.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-    curr_dt = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
-
-    def get_past_relvol(mins):
-        past_str = (curr_dt - timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M:%S")
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT timestamp FROM relvol_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (past_str,))
-            p_row = cursor.fetchone()
-            if p_row:
-                p_df = pd.read_sql_query("SELECT symbol, rel_vol FROM relvol_snapshots WHERE timestamp = ?", conn, params=(p_row[0],))
-                return dict(zip(p_df['symbol'], p_df['rel_vol']))
-        return {}
-
-    vol_1m = get_past_relvol(1)
-    vol_3m = get_past_relvol(3)
-    vol_5m = get_past_relvol(5)
-    vol_10m = get_past_relvol(10)
-    vol_15m = get_past_relvol(15)
-
-    df = live_df.copy()
-    df['TradingView Chart'] = df['Symbol'].apply(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
-
-    df['+1m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_1m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-    df['+3m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_3m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-    df['+5m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_5m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-    df['+10m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_10m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-    df['+15m Gain'] = df.apply(lambda r: round(r['RelVol'] - vol_15m.get(r['Symbol'], r['RelVol']), 2), axis=1)
-
-    df['RelVol'] = df['RelVol'].round(2)
-    df['ChangePct'] = df['ChangePct'].round(2)
-
-    gainers = df.sort_values(by='ChangePct', ascending=False).head(20).copy()
-    losers = df.sort_values(by='ChangePct', ascending=True).head(20).copy()
-
-    cols_order = [
-        'Symbol', 'PDH_Status', 'Sector Index', 'TradingView Chart', 'ChangePct',
-        'RelVol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
-    ]
-    col_names = [
-        'Stock Symbol', 'PDH/PDL Status', 'Sector Index', 'TradingView Chart', 'Price Change (%)',
-        'End Rel Vol', '+1m Gain', '+3m Gain', '+5m Gain', '+10m Gain', '+15m Gain'
-    ]
-
-    if not gainers.empty:
-        gainers = gainers[cols_order]
-        gainers.columns = col_names
-
-    if not losers.empty:
-        losers = losers[cols_order]
-        losers.columns = col_names
-
-    df_renamed = df[cols_order].copy()
-    df_renamed.columns = col_names
-
-    return gainers.reset_index(drop=True), losers.reset_index(drop=True), df_renamed.reset_index(drop=True)
-
-def style_price_change(val):
-    if isinstance(val, (int, float)):
-        if val > 0:
-            return 'color: #00c853; font-weight: bold;'
-        elif val < 0:
-            return 'color: #ff1744; font-weight: bold;'
-    return ''
-
-def generate_5min_time_options():
-    time_options = []
-    today_date = datetime.now(TIMEZONE).date()
-    start = datetime.combine(today_date, time(9, 15))
-    end = datetime.combine(today_date, time(15, 30))
-    current = start
-    while current <= end:
-        label = current.strftime('%I:%M %p')
-        time_options.append((label, current.time()))
-        current += timedelta(minutes=5)
-    return time_options
-
-LINK_COLUMN_CONFIG = {
-    "TradingView Chart": st.column_config.LinkColumn(
-        "TradingView Chart",
-        display_text="Open Chart 📈"
-    )
-}
-
-# ==========================================
-# DASHBOARD UI
-# ==========================================
-now_dt = datetime.now(TIMEZONE)
-now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-today_date_str = now_dt.strftime("%Y-%m-%d")
-
-st.sidebar.header("📌 Stock Universe Selection")
-stock_universe_mode = st.sidebar.radio(
-    "Choose Stock Universe:",
-    options=["Custom 200 List", "Nifty 500 Stocks"],
-    index=1
+# ---------------------------------------------------------
+# 1. PAGE CONFIG & CONSTANTS
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="Real-Time Sector & Stock Breakout Scanner",
+    page_icon="📈",
+    layout="wide",
 )
 
-st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Custom Time Range")
+IST = pytz.timezone("Asia/Kolkata")
+CUSTOM_STOCKS_FILE = "custom_stocks.json"
+MAX_CUSTOM_ENTRIES = 700
 
-time_options = generate_5min_time_options()
-time_labels = [opt[0] for opt in time_options]
+DEFAULT_SECTORS = {
+    "NIFTY 50": "^NSEI",
+    "NIFTY CEMENT": "NIFTY_CEMENT.NS",
+    "NIFTY IT": "^CNXIT",
+    "NIFTY AUTO": "^CNXAUTO",
+    "NIFTY PHARMA": "^CNXPHARMA",
+    "NIFTY FMCG": "^CNXFMCG",
+    "NIFTY METAL": "^CNXMETAL",
+    "NIFTY REALTY": "^CNXREALTY",
+    "NIFTY ENERGY": "^CNXENERGY",
+    "NIFTY INFRA": "^CNXINFRA",
+    "NIFTY PSU BANK": "^CNXPSUBANK",
+    "NIFTY MEDIA": "^CNXMEDIA",
+    "NIFTY FIN SERVICE": "NIFTY_FIN_SERVICE.NS",
+    "NIFTY PVT BANK": "NIFTY_PVT_BANK.NS",
+    "NIFTY HEALTHCARE": "NIFTY_HEALTHCARE.NS",
+    "NIFTY CONSUMER DUR": "NIFTY_CONSR_DURBL.NS",
+    "NIFTY OIL & GAS": "NIFTY_OIL_AND_GAS.NS",
+    "NIFTY FINSEREXBNK": "NIFTY_FINSEREXBNK.NS",
+    "NIFTY RAILWAYSPSU": "NIFTY_RAILWAYSPSU.NS",
+    "NIFTY MS IT TELCM": "NIFTY_MS_IT_TELCM.NS",
+    "NIFTY PSE": "^CNXPSE",
+    "NIFTY SERVICES": "^CNXSERVICE",
+    "NIFTY CPSE": "CPSE.NS",
+    "NIFTY INDIA DEFENCE": "MODEFENCE.NS",
+    "NIFTY INDIA MFG": "NIFTY_INDIA_MFG.NS",
+    "NIFTY CAPITAL MKT": "NIFTY_CAPITAL_MKT.NS",
+    "NIFTY CHEMICALS": "NIFTY_CHEMICALS.NS",
+    "NIFTY HOUSING": "NIFTY_HOUSING.NS",
+    "NIFTY TRANS & LOG": "NIFTY_TRANS_LOGIS.NS",
+}
 
-selected_start_label = st.sidebar.selectbox("Select Start Time:", options=time_labels, index=0)
-start_idx = time_labels.index(selected_start_label)
-default_end_idx = min(start_idx + 1, len(time_labels) - 1)
-selected_end_label = st.sidebar.selectbox("Select End Time:", options=time_labels, index=default_end_idx)
+DEFAULT_CUSTOM_STOCKS = [
+    {"id": "1", "symbol": "RELIANCE.NS", "sector": "Energy & Oil"},
+    {"id": "2", "symbol": "RELIANCE.NS", "sector": "Retail & Consumer"},
+    {"id": "3", "symbol": "TCS.NS", "sector": "IT Services"},
+    {"id": "4", "symbol": "HDFCBANK.NS", "sector": "Private Banks"},
+    {"id": "5", "symbol": "INFY.NS", "sector": "IT Services"},
+]
 
-custom_start_time = next(opt[1] for opt in time_options if opt[0] == selected_start_label)
-custom_end_time = next(opt[1] for opt in time_options if opt[0] == selected_end_label)
 
-live_df = fetch_live_fno_data(stock_universe_mode)
-indices_df = fetch_live_indices_data()
+def normalize_ticker(raw_symbol: str) -> str:
+    sym = str(raw_symbol).strip().upper()
+    if not sym:
+        return ""
+    if not sym.startswith("^") and "." not in sym and "=" not in sym:
+        return f"{sym}.NS"
+    return sym
 
-st.title("⚡ NSE Relative Volume & Price Movers")
-st.caption(f"Active Universe: **{stock_universe_mode} ({len(live_df)} Loaded)** | PDH/PDL Scanner: 🟢 **Active** | Refreshed: {now_str} IST")
 
-tab1, tab3, tab5, tab10, tab15, tab_custom, tab_day, tab_nifty500, tab_sectors, tab_indices = st.tabs([
-    "1 Min", "3 Min", "5 Min", "10 Min", "15 Min", "🎯 Custom Range", "🔥 Top Gainers/Losers", "🌐 Nifty 500", "📂 Sectors", "📊 Sector & Thematic Indices"
+def load_custom_stocks():
+    if os.path.exists(CUSTOM_STOCKS_FILE):
+        try:
+            with open(CUSTOM_STOCKS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    cleaned = []
+                    for item in data[:MAX_CUSTOM_ENTRIES]:
+                        if isinstance(item, dict) and item.get("symbol"):
+                            cleaned.append({
+                                "id": str(item.get("id") or uuid.uuid4())[:8],
+                                "symbol": normalize_ticker(item["symbol"]),
+                                "sector": str(item.get("sector") or "Uncategorized").strip() or "Uncategorized",
+                            })
+                    return cleaned
+        except Exception:
+            pass
+    return [item.copy() for item in DEFAULT_CUSTOM_STOCKS]
+
+
+def save_custom_stocks(entries):
+    with open(CUSTOM_STOCKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(entries[:MAX_CUSTOM_ENTRIES], f, indent=2)
+
+
+if "sectors" not in st.session_state:
+    st.session_state.sectors = DEFAULT_SECTORS.copy()
+
+if "custom_stocks" not in st.session_state:
+    st.session_state.custom_stocks = load_custom_stocks()
+
+# ---------------------------------------------------------
+# 2. SIDEBAR: REFRESH, MANUAL RESET & SECTOR CONTROLS
+# ---------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Dashboard Controls")
+
+    if st.button("🔄 Refresh Market Data Now", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+    auto_refresh = st.toggle("Live Auto-Refresh", value=True)
+    refresh_interval = st.slider("Refresh Interval (seconds)", min_value=30, max_value=300, value=60, step=15)
+    if auto_refresh:
+        st_autorefresh(interval=refresh_interval * 1000, key="datarefresh")
+
+    st.divider()
+    st.subheader("➕ Add Sector (Tab 1)")
+    new_name = st.text_input("Sector Display Name", placeholder="e.g., NIFTY BANK")
+    new_ticker = st.text_input("Yahoo Ticker", placeholder="e.g., ^NSEBANK")
+    if st.button("Add Sector", use_container_width=True):
+        if new_name and new_ticker:
+            st.session_state.sectors[new_name.strip()] = new_ticker.strip()
+            st.success(f"Added {new_name.strip()}")
+            st.rerun()
+
+    st.divider()
+    st.subheader("🗑️ Remove / Reset Sectors (Tab 1)")
+    to_remove = st.multiselect(
+        "Select sectors to remove:",
+        options=list(st.session_state.sectors.keys()),
+    )
+    if st.button("Remove Selected Sectors", use_container_width=True):
+        for item in to_remove:
+            del st.session_state.sectors[item]
+        st.rerun()
+
+    if st.button("Reset Default Sectors", use_container_width=True):
+        st.session_state.sectors = DEFAULT_SECTORS.copy()
+        st.rerun()
+
+
+# ---------------------------------------------------------
+# 3. MARKET METRICS ENGINE (SHARED BY SECTORS & STOCKS)
+# ---------------------------------------------------------
+def compute_metrics_for_ticker(df: pd.DataFrame):
+    df = df.dropna(how="all")
+    if df.empty or len(df) < 5:
+        return None
+
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC").tz_convert(IST)
+    else:
+        df.index = df.index.tz_convert(IST)
+
+    df = df.copy()
+    df["Date"] = df.index.date
+    unique_dates = sorted(df["Date"].unique())
+    if len(unique_dates) < 2:
+        return None
+
+    today_date = unique_dates[-1]
+    prev_date = unique_dates[-2]
+
+    today_df = df[df["Date"] == today_date]
+    prev_df = df[df["Date"] == prev_date]
+
+    if today_df.empty or prev_df.empty:
+        return None
+
+    ltp = float(today_df["Close"].iloc[-1])
+    prev_close = float(prev_df["Close"].iloc[-1])
+
+    pdh = float(prev_df["High"].max())
+    pdl = float(prev_df["Low"].min())
+
+    orb_df = today_df.between_time(time(9, 15), time(9, 29))
+    if not orb_df.empty:
+        orb_high = float(orb_df["High"].max())
+        orb_low = float(orb_df["Low"].min())
+    else:
+        orb_high = float(today_df["High"].iloc[0])
+        orb_low = float(today_df["Low"].iloc[0])
+
+    above_pdh = ltp > pdh
+    below_pdl = ltp < pdl
+    above_orb = ltp > orb_high
+    below_orb = ltp < orb_low
+
+    if above_pdh and above_orb:
+        signal = "🚀 STRONG BULL (PDH + 15m)"
+    elif below_pdl and below_orb:
+        signal = "🔻 STRONG BEAR (PDL + 15m)"
+    elif above_pdh:
+        signal = "🟢 Crossed PDH"
+    elif below_pdl:
+        signal = "🔴 Crossed PDL"
+    elif above_orb:
+        signal = "🟩 Crossed 15m High"
+    elif below_orb:
+        signal = "🟥 Crossed 15m Low"
+    else:
+        signal = "⚪ Inside Range"
+
+    def pct_change_bars(bars_back: int) -> float:
+        if len(df) > bars_back:
+            past_price = float(df["Close"].iloc[-(bars_back + 1)])
+            if past_price != 0:
+                return ((ltp - past_price) / past_price) * 100
+        return 0.0
+
+    return {
+        "LTP": round(ltp, 2),
+        "Signal": signal,
+        "PDH Status": "Above PDH" if above_pdh else ("Below PDL" if below_pdl else "Inside"),
+        "15m ORB Status": "Above 15m H" if above_orb else ("Below 15m L" if below_orb else "Inside"),
+        "Daily %": round(((ltp - prev_close) / prev_close) * 100, 2) if prev_close else 0.0,
+        "5m %": round(pct_change_bars(1), 2),
+        "10m %": round(pct_change_bars(2), 2),
+        "15m %": round(pct_change_bars(3), 2),
+        "30m %": round(pct_change_bars(6), 2),
+        "1h %": round(pct_change_bars(12), 2),
+        "4h %": round(pct_change_bars(48), 2),
+        "PDH": round(pdh, 2),
+        "PDL": round(pdl, 2),
+        "15m High": round(orb_high, 2),
+        "15m Low": round(orb_low, 2),
+    }
+
+
+@st.cache_data(ttl=55)
+def fetch_batch_metrics(unique_tickers_tuple: tuple):
+    tickers = list(unique_tickers_tuple)
+    if not tickers:
+        return {}
+
+    raw_5m = yf.download(
+        tickers=tickers,
+        period="5d",
+        interval="5m",
+        group_by="ticker",
+        progress=False,
+        threads=True,
+    )
+
+    metrics_map = {}
+    for ticker in tickers:
+        try:
+            if len(tickers) == 1:
+                df = raw_5m
+            else:
+                if ticker not in raw_5m.columns.get_level_values(0):
+                    continue
+                df = raw_5m[ticker]
+            computed = compute_metrics_for_ticker(df)
+            if computed:
+                metrics_map[ticker] = computed
+        except Exception:
+            continue
+
+    return metrics_map
+
+
+def build_sectors_df(sector_dict: dict, metrics_map: dict) -> pd.DataFrame:
+    rows = []
+    for name, ticker in sector_dict.items():
+        m = metrics_map.get(ticker)
+        if m:
+            rows.append({"Sector": name, "Ticker": ticker, **m})
+    return pd.DataFrame(rows)
+
+
+def build_custom_stocks_df(entries: list, metrics_map: dict) -> pd.DataFrame:
+    rows = []
+    for item in entries:
+        sym = item["symbol"]
+        sec = item["sector"]
+        m = metrics_map.get(sym)
+        if m:
+            rows.append({
+                "Entry ID": item["id"],
+                "Stock": sym,
+                "Sector": sec,
+                **m,
+            })
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------
+# 4. STYLING & TABLE RENDER HELPER
+# ---------------------------------------------------------
+def color_pct(val):
+    if isinstance(val, (int, float)):
+        if val > 0:
+            return "color: #00c853; font-weight: 600;"
+        elif val < 0:
+            return "color: #ff1744; font-weight: 600;"
+    return ""
+
+
+def highlight_signal(val):
+    s = str(val)
+    if "STRONG BULL" in s:
+        return "background-color: rgba(0, 200, 83, 0.25); color: #00e676; font-weight: bold;"
+    elif "STRONG BEAR" in s:
+        return "background-color: rgba(255, 23, 68, 0.25); color: #ff5252; font-weight: bold;"
+    elif "Crossed PDH" in s or "Crossed 15m High" in s:
+        return "background-color: rgba(0, 200, 83, 0.12); color: #69f0ae;"
+    elif "Crossed PDL" in s or "Crossed 15m Low" in s:
+        return "background-color: rgba(255, 23, 68, 0.12); color: #ff8a80;"
+    return "color: #9e9e9e;"
+
+
+PCT_COLS = ["Daily %", "5m %", "10m %", "15m %", "30m %", "1h %", "4h %"]
+
+
+def render_scanner_table(df: pd.DataFrame, height: int = 600):
+    styled = (
+        df.style.map(color_pct, subset=PCT_COLS)
+        .map(highlight_signal, subset=["Signal"])
+        .format({
+            "LTP": "{:,.2f}",
+            "PDH": "{:,.2f}",
+            "PDL": "{:,.2f}",
+            "15m High": "{:,.2f}",
+            "15m Low": "{:,.2f}",
+            "Daily %": "{:+.2f}%",
+            "5m %": "{:+.2f}%",
+            "10m %": "{:+.2f}%",
+            "15m %": "{:+.2f}%",
+            "30m %": "{:+.2f}%",
+            "1h %": "{:+.2f}%",
+            "4h %": "{:+.2f}%",
+        })
+    )
+    st.dataframe(styled, use_container_width=True, height=height, hide_index=True)
+
+
+def apply_signal_filter(df: pd.DataFrame, filter_choice: str) -> pd.DataFrame:
+    if filter_choice == "Only Breakouts (Bullish)":
+        return df[df["Signal"].str.contains("BULL|PDH|15m High", na=False)]
+    elif filter_choice == "Only Breakdowns (Bearish)":
+        return df[df["Signal"].str.contains("BEAR|PDL|15m Low", na=False)]
+    elif filter_choice == "Dual Breakouts/Breakdowns Only":
+        return df[df["Signal"].str.contains("STRONG", na=False)]
+    elif filter_choice == "PDH / PDL Crosses Only":
+        return df[df["Signal"].str.contains("PDH|PDL|STRONG", na=False)]
+    elif filter_choice == "15m ORB Crosses Only":
+        return df[df["Signal"].str.contains("15m|STRONG", na=False)]
+    return df
+
+
+# ---------------------------------------------------------
+# 5. HEADER & SINGLE BATCH FETCH ACROSS BOTH TABS
+# ---------------------------------------------------------
+st.title("📊 Real-Time Sector & Stock Breakout Dashboard")
+st.caption(
+    f"Sectors: **{len(st.session_state.sectors)}** | "
+    f"Custom Stock Entries: **{len(st.session_state.custom_stocks)}/{MAX_CUSTOM_ENTRIES}** | "
+    f"Last Updated: **{datetime.now(IST).strftime('%d %b %Y, %I:%M:%S %p IST')}**"
+)
+
+all_unique_tickers = tuple(
+    sorted(
+        set(st.session_state.sectors.values())
+        | {item["symbol"] for item in st.session_state.custom_stocks}
+    )
+)
+
+with st.spinner("Fetching live Yahoo Finance 5m & intraday data..."):
+    metrics_map = fetch_batch_metrics(all_unique_tickers)
+
+tab1, tab2 = st.tabs([
+    "🌐 Tab 1: Sector Breakout Scanner",
+    f"🎯 Tab 2: Custom Stock Scanner ({len(st.session_state.custom_stocks)}/{MAX_CUSTOM_ENTRIES})",
 ])
 
-for tab, mins in zip([tab1, tab3, tab5, tab10, tab15], [1, 3, 5, 10, 15]):
-    with tab:
-        st.subheader(f"Top 20 Volume Gainers - Last {mins} Minute(s)")
-        df_gain, gain_col_name = calculate_gain_relative(mins, now_str)
-        if not df_gain.empty:
-            styled_df = df_gain.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-            st.dataframe(styled_df, column_config=LINK_COLUMN_CONFIG, use_container_width=True)
+# ---------------------------------------------------------
+# 6. TAB 1: SECTOR BREAKOUT SCANNER
+# ---------------------------------------------------------
+with tab1:
+    sector_df = build_sectors_df(st.session_state.sectors, metrics_map)
+
+    if sector_df.empty:
+        st.warning("No sector data available right now. Check ticker symbols or market hours.")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🚀 Dual Bullish (PDH + 15m H)", int(sector_df["Signal"].str.contains("STRONG BULL").sum()))
+        c2.metric("🔻 Dual Bearish (PDL + 15m L)", int(sector_df["Signal"].str.contains("STRONG BEAR").sum()))
+        c3.metric("🟢 Above Prev Day High", int((sector_df["PDH Status"] == "Above PDH").sum()))
+        c4.metric("🔴 Below Prev Day Low", int((sector_df["PDH Status"] == "Below PDL").sum()))
+
+        t1_filter = st.radio(
+            "Filter Sectors:",
+            [
+                "All Sectors",
+                "Only Breakouts (Bullish)",
+                "Only Breakdowns (Bearish)",
+                "Dual Breakouts/Breakdowns Only",
+                "PDH / PDL Crosses Only",
+                "15m ORB Crosses Only",
+            ],
+            horizontal=True,
+            key="tab1_filter",
+        )
+
+        view_t1 = apply_signal_filter(sector_df, t1_filter).sort_values(by="Daily %", ascending=False).reset_index(drop=True)
+        render_scanner_table(view_t1)
+
+# ---------------------------------------------------------
+# 7. TAB 2: CUSTOM STOCK SCANNER (UP TO 700 ENTRIES)
+# ---------------------------------------------------------
+with tab2:
+    st.subheader("Manage Custom Stocks & Sectors (Same Stock Allowed in Multiple Sectors)")
+
+    # Single Entry Form
+    add_col1, add_col2, add_col3 = st.columns([2, 2, 1])
+    with add_col1:
+        inp_stock = st.text_input(
+            "Stock Symbol",
+            placeholder="e.g., RELIANCE or RELIANCE.NS",
+            key="custom_stock_input",
+        )
+    with add_col2:
+        inp_sector = st.text_input(
+            "Sector Name (Any Name / Duplicates Allowed)",
+            placeholder="e.g., Momentum Basket or Energy",
+            key="custom_sector_input",
+        )
+    with add_col3:
+        st.write("")
+        st.write("")
+        add_clicked = st.button("➕ Add Stock", use_container_width=True, key="btn_add_custom")
+
+    if add_clicked:
+        norm_sym = normalize_ticker(inp_stock)
+        clean_sec = inp_sector.strip() if inp_sector.strip() else "Uncategorized"
+        if not norm_sym:
+            st.error("Please enter a valid stock symbol.")
+        elif len(st.session_state.custom_stocks) >= MAX_CUSTOM_ENTRIES:
+            st.error(f"Limit reached ({MAX_CUSTOM_ENTRIES} entries). Remove entries before adding more.")
         else:
-            st.info("Accumulating minute-by-minute background snapshots... Please wait.")
+            st.session_state.custom_stocks.append({
+                "id": str(uuid.uuid4())[:8],
+                "symbol": norm_sym,
+                "sector": clean_sec,
+            })
+            save_custom_stocks(st.session_state.custom_stocks)
+            st.success(f"Added **{norm_sym}** under sector **{clean_sec}**.")
+            st.rerun()
 
-with tab_custom:
-    st.subheader(f"Top 20 RelVol Gainers: {selected_start_label} ➔ {selected_end_label}")
-    if custom_start_time < custom_end_time:
-        start_ts_str = f"{today_date_str} {custom_start_time.strftime('%H:%M:%S')}"
-        end_ts_str = f"{today_date_str} {custom_end_time.strftime('%H:%M:%S')}"
-        df_custom, gain_col_name, act_start, act_end = calculate_gain_by_exact_timestamps(start_ts_str, end_ts_str, label_name="Custom Window Gain")
-        if not df_custom.empty:
-            styled_custom = df_custom.style.map(style_price_change, subset=['Price Change %']).format({'Price Change %': '{:+.2f}%'})
-            st.dataframe(styled_custom, column_config=LINK_COLUMN_CONFIG, use_container_width=True)
+    # Manual Reset Bar
+    r_col1, r_col2, r_col3 = st.columns([1.5, 1.5, 3])
+    with r_col1:
+        if st.button("↩️ Reset to Default List", use_container_width=True, key="btn_reset_default_stocks"):
+            st.session_state.custom_stocks = [item.copy() for item in DEFAULT_CUSTOM_STOCKS]
+            save_custom_stocks(st.session_state.custom_stocks)
+            st.success("Reset custom stock list to defaults.")
+            st.rerun()
+    with r_col2:
+        if st.button("🧹 Clear All Custom Stocks", use_container_width=True, key="btn_clear_all_stocks"):
+            st.session_state.custom_stocks = []
+            save_custom_stocks(st.session_state.custom_stocks)
+            st.warning("Cleared all custom stock entries.")
+            st.rerun()
 
-with tab_day:
-    st.subheader("🔥 Top 20 Day Gainers & Losers with Multi-Timeframe Volume Momentum")
-    gainers_df, losers_df, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
-    if not gainers_df.empty:
-        st.markdown("### 🟢 Top 20 Day Gainers (% Increase)")
-        st.dataframe(gainers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
-    if not losers_df.empty:
-        st.markdown("### 🔴 Top 20 Day Losers (% Drop)")
-        st.dataframe(losers_df.style.map(style_price_change, subset=['Price Change (%)']).format({'Price Change (%)': '{:+.2f}%'}), column_config=LINK_COLUMN_CONFIG, use_container_width=True)
+    # Bulk Paste Expander
+    with st.expander("📥 Bulk Add Stocks (Paste `STOCK, SECTOR` One Per Line — Up to 700 Total)"):
+        st.caption("Example:\n`INFY, IT Sector`\n`INFY, High Beta`\n`HDFCBANK, Banking`")
+        bulk_text = st.text_area("Paste rows here:", height=120, key="bulk_stocks_area")
+        if st.button("Import Bulk List", key="btn_bulk_import"):
+            added_count = 0
+            for line in bulk_text.splitlines():
+                if len(st.session_state.custom_stocks) >= MAX_CUSTOM_ENTRIES:
+                    break
+                parts = [p.strip() for p in line.split(",", 1)]
+                sym = normalize_ticker(parts[0]) if parts and parts[0] else ""
+                sec = parts[1] if len(parts) > 1 and parts[1] else "Uncategorized"
+                if sym:
+                    st.session_state.custom_stocks.append({
+                        "id": str(uuid.uuid4())[:8],
+                        "symbol": sym,
+                        "sector": sec,
+                    })
+                    added_count += 1
+            save_custom_stocks(st.session_state.custom_stocks)
+            st.success(f"Imported {added_count} stock-sector rows.")
+            st.rerun()
 
-# ==========================================
-# TAB: NIFTY 500 STOCKS
-# ==========================================
-with tab_nifty500:
-    st.subheader("🌐 Nifty 500 Broad Universe Relative Volume Scanner")
-    nifty500_df = fetch_live_fno_data("Nifty 500 Stocks")
-    
-    if not nifty500_df.empty:
-        _, _, nifty500_tf_df = fetch_day_movers_with_multi_timeframes(nifty500_df, now_str)
-        nifty500_tf_df = nifty500_tf_df.sort_values(by='End Rel Vol', ascending=False).reset_index(drop=True)
-        
-        styled_nifty500 = nifty500_tf_df.style.map(
-            style_price_change, subset=['Price Change (%)']
-        ).format({'Price Change (%)': '{:+.2f}%'})
+    # CSV / JSON Export & Import Expander
+    with st.expander("💾 Export & Import Custom Stock List (CSV / JSON)"):
+        ex_col1, ex_col2 = st.columns(2)
 
-        st.dataframe(
-            styled_nifty500, 
-            column_config=LINK_COLUMN_CONFIG, 
-            use_container_width=True
+        export_df = pd.DataFrame(st.session_state.custom_stocks)
+        if export_df.empty:
+            export_df = pd.DataFrame(columns=["id", "symbol", "sector"])
+
+        with ex_col1:
+            csv_data = export_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="⬇️ Export List as CSV",
+                data=csv_data,
+                file_name="custom_stocks_700.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="btn_export_csv",
+            )
+
+        with ex_col2:
+            json_data = json.dumps(st.session_state.custom_stocks, indent=2).encode("utf-8")
+            st.download_button(
+                label="⬇️ Export List as JSON",
+                data=json_data,
+                file_name="custom_stocks_700.json",
+                mime="application/json",
+                use_container_width=True,
+                key="btn_export_json",
+            )
+
+        st.divider()
+        import_mode = st.radio(
+            "When importing a file:",
+            ["Append to existing list (up to 700)", "Replace existing list"],
+            horizontal=True,
+            key="import_mode_radio",
         )
-    else:
-        st.info("Fetching Nifty 500 stock universe relative volume data...")
-
-# ==========================================
-# TAB: SECTOR WISE ANALYSIS
-# ==========================================
-with tab_sectors:
-    st.subheader("📂 Sector-Wise Relative Volume & Momentum")
-    _, _, full_df = fetch_day_movers_with_multi_timeframes(live_df, now_str)
-
-    if not full_df.empty:
-        st.markdown("### 📊 Sector Volume & Price Overview")
-        sector_summary = full_df.groupby('Sector Index').agg(
-            Stock_Count=('Stock Symbol', 'count'),
-            Avg_RelVol=('End Rel Vol', 'mean'),
-            Avg_Price_Change=('Price Change (%)', 'mean')
-        ).reset_index()
-
-        sector_summary['Avg_RelVol'] = sector_summary['Avg_RelVol'].round(2)
-        sector_summary['Avg_Price_Change'] = sector_summary['Avg_Price_Change'].round(2)
-        sector_summary = sector_summary.sort_values(by='Avg_RelVol', ascending=False)
-        
-        sector_summary.columns = ['Sector Index', 'Total Stocks', 'Average Rel Vol', 'Average Price Change (%)']
-        
-        styled_summary = sector_summary.style.map(
-            style_price_change, subset=['Average Price Change (%)']
-        ).format({'Average Price Change (%)': '{:+.2f}%'})
-        
-        st.dataframe(styled_summary, use_container_width=True)
-
-        st.markdown("---")
-
-        st.markdown("### 🎯 Filter Stocks by Sector")
-        all_sectors = sorted(full_df['Sector Index'].unique().tolist())
-        selected_sector = st.selectbox("Select Sector:", options=all_sectors)
-
-        sector_stocks = full_df[full_df['Sector Index'] == selected_sector].sort_values(
-            by='End Rel Vol', ascending=False
-        ).reset_index(drop=True)
-
-        styled_sector_stocks = sector_stocks.style.map(
-            style_price_change, subset=['Price Change (%)']
-        ).format({'Price Change (%)': '{:+.2f}%'})
-
-        st.dataframe(
-            styled_sector_stocks, 
-            column_config=LINK_COLUMN_CONFIG, 
-            use_container_width=True
+        uploaded_file = st.file_uploader(
+            "Upload CSV or JSON file (CSV needs `symbol` and `sector` columns)",
+            type=["csv", "json"],
+            key="custom_stocks_uploader",
         )
-    else:
-        st.info("Loading sector relative volume data...")
 
-# ==========================================
-# TAB: SECTOR & THEMATIC INDICES
-# ==========================================
-with tab_indices:
-    st.subheader("📊 Sectoral & Thematic Indices Relative Volume Tracking")
-    
-    if not indices_df.empty:
-        _, _, indices_tf_df = fetch_day_movers_with_multi_timeframes(indices_df, now_str)
-        
-        indices_tf_df = indices_tf_df.drop(columns=['PDH/PDL Status', 'Sector Index'], errors='ignore')
-        indices_tf_df = indices_tf_df.sort_values(by='End Rel Vol', ascending=False).reset_index(drop=True)
-        
-        styled_indices = indices_tf_df.style.map(
-            style_price_change, subset=['Price Change (%)']
-        ).format({'Price Change (%)': '{:+.2f}%'})
+        if uploaded_file is not None and st.button("📤 Import Uploaded File", key="btn_import_file"):
+            imported_rows = []
+            try:
+                if uploaded_file.name.lower().endswith(".json"):
+                    raw_json = json.load(uploaded_file)
+                    if isinstance(raw_json, list):
+                        for item in raw_json:
+                            if isinstance(item, dict) and item.get("symbol"):
+                                sym = normalize_ticker(item["symbol"])
+                                sec = str(item.get("sector") or "Uncategorized").strip() or "Uncategorized"
+                                if sym:
+                                    imported_rows.append({
+                                        "id": str(uuid.uuid4())[:8],
+                                        "symbol": sym,
+                                        "sector": sec,
+                                    })
+                elif uploaded_file.name.lower().endswith(".csv"):
+                    content = uploaded_file.getvalue().decode("utf-8")
+                    imp_df = pd.read_csv(StringIO(content))
+                    cols_lower = {c.lower().strip(): c for c in imp_df.columns}
+                    sym_col = cols_lower.get("symbol") or cols_lower.get("stock") or cols_lower.get("ticker")
+                    sec_col = cols_lower.get("sector")
+                    if not sym_col:
+                        st.error("CSV must contain a 'symbol', 'stock', or 'ticker' column.")
+                    else:
+                        for _, row in imp_df.iterrows():
+                            sym = normalize_ticker(row[sym_col])
+                            sec = str(row[sec_col]).strip() if sec_col and pd.notna(row[sec_col]) and str(row[sec_col]).strip() else "Uncategorized"
+                            if sym:
+                                imported_rows.append({
+                                    "id": str(uuid.uuid4())[:8],
+                                    "symbol": sym,
+                                    "sector": sec,
+                                })
 
-        st.dataframe(
-            styled_indices, 
-            column_config=LINK_COLUMN_CONFIG, 
-            use_container_width=True
-        )
+                if imported_rows:
+                    if import_mode.startswith("Replace"):
+                        updated = imported_rows[:MAX_CUSTOM_ENTRIES]
+                    else:
+                        remaining_slots = max(0, MAX_CUSTOM_ENTRIES - len(st.session_state.custom_stocks))
+                        updated = st.session_state.custom_stocks + imported_rows[:remaining_slots]
+
+                    st.session_state.custom_stocks = updated
+                    save_custom_stocks(st.session_state.custom_stocks)
+                    st.success(f"Imported {len(imported_rows)} rows. Total entries: {len(st.session_state.custom_stocks)}/{MAX_CUSTOM_ENTRIES}.")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Could not import file: {e}")
+
+    st.divider()
+
+    stock_df = build_custom_stocks_df(st.session_state.custom_stocks, metrics_map)
+
+    if stock_df.empty:
+        st.info("No custom stock data displayed yet. Add stocks above or import a CSV/JSON file.")
     else:
-        st.info("Fetching Sectoral and Thematic Indices relative volume data...")
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        sc1.metric("🚀 Dual Bullish", int(stock_df["Signal"].str.contains("STRONG BULL").sum()))
+        sc2.metric("🔻 Dual Bearish", int(stock_df["Signal"].str.contains("STRONG BEAR").sum()))
+        sc3.metric("🟢 Above PDH", int((stock_df["PDH Status"] == "Above PDH").sum()))
+        sc4.metric("🔴 Below PDL", int((stock_df["PDH Status"] == "Below PDL").sum()))
+
+        f_col1, f_col2, f_col3 = st.columns([2, 2, 2])
+        with f_col1:
+            available_sectors = ["All Sectors"] + sorted(stock_df["Sector"].unique().tolist())
+            selected_sec_filter = st.selectbox("Filter by Sector:", available_sectors, key="tab2_sec_filter")
+        with f_col2:
+            selected_sig_filter = st.selectbox(
+                "Filter by Breakout / Signal:",
+                [
+                    "All Signals",
+                    "Only Breakouts (Bullish)",
+                    "Only Breakdowns (Bearish)",
+                    "Dual Breakouts/Breakdowns Only",
+                    "PDH / PDL Crosses Only",
+                    "15m ORB Crosses Only",
+                ],
+                key="tab2_sig_filter",
+            )
+        with f_col3:
+            search_stock = st.text_input("Search Stock Symbol:", placeholder="e.g., RELIANCE", key="tab2_search")
+
+        view_t2 = stock_df.copy()
+        if selected_sec_filter != "All Sectors":
+            view_t2 = view_t2[view_t2["Sector"] == selected_sec_filter]
+        view_t2 = apply_signal_filter(view_t2, selected_sig_filter)
+        if search_stock.strip():
+            q = search_stock.strip().upper()
+            view_t2 = view_t2[view_t2["Stock"].str.upper().str.contains(q, na=False)]
+
+        view_t2 = view_t2.sort_values(by="Daily %", ascending=False).reset_index(drop=True)
+        render_scanner_table(view_t2.drop(columns=["Entry ID"]), height=550)
+
+        with st.expander("🗑️ Remove Specific Stock-Sector Entries"):
+            entry_labels = {
+                f"[{row['Entry ID']}] {row['Stock']} → {row['Sector']}": row["Entry ID"]
+                for _, row in stock_df.iterrows()
+            }
+            selected_to_delete = st.multiselect(
+                "Select entries to remove:",
+                options=list(entry_labels.keys()),
+                key="delete_custom_entries",
+            )
+            if st.button("Remove Selected Stock Entries", key="btn_delete_custom"):
+                ids_to_del = {entry_labels[k] for k in selected_to_delete}
+                st.session_state.custom_stocks = [
+                    x for x in st.session_state.custom_stocks if x["id"] not in ids_to_del
+                ]
+                save_custom_stocks(st.session_state.custom_stocks)
+                st.rerun()
