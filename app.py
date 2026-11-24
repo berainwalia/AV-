@@ -3,6 +3,7 @@ import os
 import uuid
 from datetime import datetime, time
 from io import StringIO
+from urllib.parse import quote
 
 import pandas as pd
 import pytz
@@ -33,9 +34,32 @@ SIGNAL_OPTIONS = [
     "⚪ Inside Range",
 ]
 
+INDEX_TO_TV_SYMBOL = {
+    "^NSEI": "NSE:NIFTY",
+    "^NSEBANK": "NSE:BANKNIFTY",
+    "^CNXIT": "NSE:CNXIT",
+    "^CNXAUTO": "NSE:CNXAUTO",
+    "^CNXPHARMA": "NSE:CNXPHARMA",
+    "^CNXFMCG": "NSE:CNXFMCG",
+    "^CNXMETAL": "NSE:CNXMETAL",
+    "^CNXREALTY": "NSE:CNXREALTY",
+    "^CNXENERGY": "NSE:CNXENERGY",
+    "^CNXINFRA": "NSE:CNXINFRA",
+    "^CNXPSUBANK": "NSE:CNXPSUBANK",
+    "^CNXMEDIA": "NSE:CNXMEDIA",
+    "^CNXSC": "NSE:CNXSMALLCAP",
+    "^NSMIDCP": "NSE:NIFTYNEXT50",
+    "^CNXCMDT": "NSE:CNXCMDT",
+    "^CNXCONSUM": "NSE:CNXCONSUM",
+    "^CNXPSE": "NSE:CNXPSE",
+    "^CNXMNC": "NSE:CNXMNC",
+    "^CNXSERVICE": "NSE:CNXSERVICE",
+    "^INDIAVIX": "NSE:INDIAVIX",
+}
+
 DEFAULT_SECTORS = {
     "NIFTY 50": "^NSEI",
-    "NIFTY CEMENT": "NIFTY_CEMENT.NS",
+    "NIFTY BANK": "^NSEBANK",
     "NIFTY IT": "^CNXIT",
     "NIFTY AUTO": "^CNXAUTO",
     "NIFTY PHARMA": "^CNXPHARMA",
@@ -51,18 +75,29 @@ DEFAULT_SECTORS = {
     "NIFTY HEALTHCARE": "NIFTY_HEALTHCARE.NS",
     "NIFTY CONSUMER DUR": "NIFTY_CONSR_DURBL.NS",
     "NIFTY OIL & GAS": "NIFTY_OIL_AND_GAS.NS",
-    "NIFTY FINSEREXBNK": "NIFTY_FINSEREXBNK.NS",
-    "NIFTY RAILWAYSPSU": "NIFTY_RAILWAYSPSU.NS",
-    "NIFTY MS IT TELCM": "NIFTY_MS_IT_TELCM.NS",
+    "NIFTY MIDCAP 100": "NIFTY_MIDCAP_100.NS",
+    "NIFTY SMALLCAP 100": "^CNXSC",
+    "NIFTY NEXT 50": "^NSMIDCP",
+    "NIFTY COMMODITIES": "^CNXCMDT",
+    "NIFTY CONSUMPTION": "^CNXCONSUM",
     "NIFTY PSE": "^CNXPSE",
+    "NIFTY MNC": "^CNXMNC",
     "NIFTY SERVICES": "^CNXSERVICE",
     "NIFTY CPSE": "CPSE.NS",
     "NIFTY INDIA DEFENCE": "MODEFENCE.NS",
+    "NIFTY INDIA DIGITAL": "NIFTY_IND_DIGITAL.NS",
     "NIFTY INDIA MFG": "NIFTY_INDIA_MFG.NS",
+    "NIFTY TOURISM": "NIFTY_TOURISM.NS",
     "NIFTY CAPITAL MKT": "NIFTY_CAPITAL_MKT.NS",
     "NIFTY CHEMICALS": "NIFTY_CHEMICALS.NS",
+    "NIFTY EV & NEW AGE": "NIFTY_EV.NS",
     "NIFTY HOUSING": "NIFTY_HOUSING.NS",
+    "NIFTY MOBILITY": "NIFTY_MOBILITY.NS",
+    "NIFTY RURAL": "NIFTY_RURAL.NS",
+    "NIFTY NON-CYC CONS": "NIFTY_NONCYC_CONS.NS",
     "NIFTY TRANS & LOG": "NIFTY_TRANS_LOGIS.NS",
+    "NIFTY MICROCAP 250": "NIFTY_MICROCAP250.NS",
+    "INDIA VIX": "^INDIAVIX",
 }
 
 DEFAULT_CUSTOM_STOCKS = [
@@ -81,6 +116,19 @@ def normalize_ticker(raw_symbol: str) -> str:
     if not sym.startswith("^") and "." not in sym and "=" not in sym:
         return f"{sym}.NS"
     return sym
+
+
+def build_tradingview_url(ticker: str) -> str:
+    t = str(ticker).strip().upper()
+    if t in INDEX_TO_TV_SYMBOL:
+        tv_sym = INDEX_TO_TV_SYMBOL[t]
+    elif t.endswith(".NS"):
+        tv_sym = f"NSE:{t[:-3]}"
+    elif t.endswith(".BO"):
+        tv_sym = f"BSE:{t[:-3]}"
+    else:
+        tv_sym = t.lstrip("^")
+    return f"https://www.tradingview.com/chart/?symbol={quote(tv_sym)}"
 
 
 def load_custom_stocks():
@@ -281,7 +329,12 @@ def build_sectors_df(sector_dict: dict, metrics_map: dict) -> pd.DataFrame:
     for name, ticker in sector_dict.items():
         m = metrics_map.get(ticker)
         if m:
-            rows.append({"Sector": name, "Ticker": ticker, **m})
+            rows.append({
+                "Sector": name,
+                "Ticker": ticker,
+                "Chart": build_tradingview_url(ticker),
+                **m,
+            })
     return pd.DataFrame(rows)
 
 
@@ -295,6 +348,7 @@ def build_custom_stocks_df(entries: list, metrics_map: dict) -> pd.DataFrame:
             rows.append({
                 "Entry ID": item["id"],
                 "Stock": sym,
+                "Chart": build_tradingview_url(sym),
                 "Sector": sec,
                 **m,
             })
@@ -348,7 +402,18 @@ def render_scanner_table(df: pd.DataFrame, height: int = 600):
             "4h %": "{:+.2f}%",
         })
     )
-    st.dataframe(styled, use_container_width=True, height=height, hide_index=True)
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        height=height,
+        hide_index=True,
+        column_config={
+            "Chart": st.column_config.LinkColumn(
+                "TradingView",
+                display_text="Open Chart ↗",
+            )
+        },
+    )
 
 
 def apply_signal_filter(df: pd.DataFrame, filter_choice: str) -> pd.DataFrame:
