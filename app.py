@@ -1,7 +1,7 @@
 import json
 import os
 import uuid
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from io import StringIO
 from urllib.parse import quote
 
@@ -21,6 +21,7 @@ st.set_page_config(
 )
 
 IST = pytz.timezone("Asia/Kolkata")
+DAILY_RESET_TIME = time(9, 10)  # 9:10 AM IST
 CUSTOM_STOCKS_FILE = "custom_stocks.json"
 MAX_CUSTOM_ENTRIES = 700
 
@@ -66,7 +67,6 @@ DEFAULT_SECTORS = {
     "NIFTY TRANS & LOG": "NIFTY_TRANS_LOGIS.NS",
 }
 
-# Optional overrides for NSE index symbols that differ slightly on TradingView
 TV_SYMBOL_OVERRIDES = {
     "^NSEI": "NSE:NIFTY",
     "^NSEBANK": "NSE:BANKNIFTY",
@@ -156,14 +156,47 @@ def save_custom_stocks(entries):
         json.dump(entries[:MAX_CUSTOM_ENTRIES], f, indent=2)
 
 
-if "sectors" not in st.session_state:
-    st.session_state.sectors = DEFAULT_SECTORS.copy()
+# ---------------------------------------------------------
+# 2. DAILY 9:10 AM IST AUTO-RESET ENGINE
+# ---------------------------------------------------------
+def get_current_reset_anchor(now_ist: datetime):
+    """Returns today's date if current IST time >= 9:10 AM, else yesterday's date."""
+    if now_ist.time() >= DAILY_RESET_TIME:
+        return now_ist.date()
+    return (now_ist - timedelta(days=1)).date()
 
-if "custom_stocks" not in st.session_state:
-    st.session_state.custom_stocks = load_custom_stocks()
+
+def check_daily_910_reset():
+    now_ist = datetime.now(IST)
+    active_anchor = get_current_reset_anchor(now_ist)
+
+    if "last_auto_reset_date" not in st.session_state:
+        st.session_state.last_auto_reset_date = active_anchor
+        st.session_state.last_auto_reset_ts = None
+
+    if "sectors" not in st.session_state:
+        st.session_state.sectors = DEFAULT_SECTORS.copy()
+
+    if "custom_stocks" not in st.session_state:
+        st.session_state.custom_stocks = load_custom_stocks()
+
+    # Trigger reset once when crossing 9:10 AM IST on a new day
+    if st.session_state.last_auto_reset_date != active_anchor:
+        st.cache_data.clear()
+        st.session_state.sectors = DEFAULT_SECTORS.copy()
+
+        # Remove the next 2 lines if you want to keep your custom stock list across days
+        st.session_state.custom_stocks = [item.copy() for item in DEFAULT_CUSTOM_STOCKS]
+        save_custom_stocks(st.session_state.custom_stocks)
+
+        st.session_state.last_auto_reset_date = active_anchor
+        st.session_state.last_auto_reset_ts = now_ist.strftime("%d %b %Y, %I:%M:%S %p IST")
+
+
+check_daily_910_reset()
 
 # ---------------------------------------------------------
-# 2. SIDEBAR: REFRESH, MANUAL RESET & SECTOR CONTROLS
+# 3. SIDEBAR: REFRESH, MANUAL RESET & SECTOR CONTROLS
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Dashboard Controls")
@@ -176,6 +209,10 @@ with st.sidebar:
     refresh_interval = st.slider("Refresh Interval (seconds)", min_value=30, max_value=300, value=60, step=15)
     if auto_refresh:
         st_autorefresh(interval=refresh_interval * 1000, key="datarefresh")
+
+    st.info("🕘 **Daily Auto-Reset:** Enabled for **9:10 AM IST** every day.")
+    if st.session_state.get("last_auto_reset_ts"):
+        st.caption(f"Last 9:10 AM reset ran: {st.session_state.last_auto_reset_ts}")
 
     st.divider()
     st.subheader("➕ Add Sector (Tab 1)")
@@ -204,7 +241,7 @@ with st.sidebar:
 
 
 # ---------------------------------------------------------
-# 3. MARKET METRICS ENGINE (SHARED BY SECTORS & STOCKS)
+# 4. MARKET METRICS ENGINE (SHARED BY SECTORS & STOCKS)
 # ---------------------------------------------------------
 def compute_metrics_for_ticker(df: pd.DataFrame):
     df = df.dropna(how="all")
@@ -356,13 +393,13 @@ def build_custom_stocks_df(entries: list, metrics_map: dict) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------
-# 4. TABLE RENDER HELPER (WITH TRADINGVIEW LINK COLUMN)
+# 5. TABLE RENDER HELPER (WITH TRADINGVIEW LINK COLUMN)
 # ---------------------------------------------------------
 PCT_COLS = ["Daily %", "5m %", "10m %", "15m %", "30m %", "1h %", "4h %"]
 PRICE_COLS = ["LTP", "PDH", "PDL", "15m High", "15m Low"]
 
 
-def render_scanner_table(df: pd.DataFrame, display_text_col: str, height: int = 600):
+def render_scanner_table(df: pd.DataFrame, height: int = 600):
     column_config = {
         "TV Chart": st.column_config.LinkColumn(
             label="TradingView",
@@ -400,12 +437,13 @@ def apply_signal_filter(df: pd.DataFrame, filter_choice: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------
-# 5. HEADER & SINGLE BATCH FETCH ACROSS BOTH TABS
+# 6. HEADER & SINGLE BATCH FETCH ACROSS BOTH TABS
 # ---------------------------------------------------------
 st.title("📊 Real-Time Sector & Stock Breakout Dashboard")
 st.caption(
     f"Sectors: **{len(st.session_state.sectors)}** | "
     f"Custom Stock Entries: **{len(st.session_state.custom_stocks)}/{MAX_CUSTOM_ENTRIES}** | "
+    f"Auto-Reset: **9:10 AM IST** | "
     f"Last Updated: **{datetime.now(IST).strftime('%d %b %Y, %I:%M:%S %p IST')}**"
 )
 
@@ -425,7 +463,7 @@ tab1, tab2 = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# 6. TAB 1: SECTOR BREAKOUT SCANNER
+# 7. TAB 1: SECTOR BREAKOUT SCANNER
 # ---------------------------------------------------------
 with tab1:
     sector_df = build_sectors_df(st.session_state.sectors, metrics_map)
@@ -454,10 +492,10 @@ with tab1:
         )
 
         view_t1 = apply_signal_filter(sector_df, t1_filter).sort_values(by="Daily %", ascending=False).reset_index(drop=True)
-        render_scanner_table(view_t1, display_text_col="Sector")
+        render_scanner_table(view_t1)
 
 # ---------------------------------------------------------
-# 7. TAB 2: CUSTOM STOCK SCANNER (UP TO 700 ENTRIES)
+# 8. TAB 2: CUSTOM STOCK SCANNER (UP TO 700 ENTRIES)
 # ---------------------------------------------------------
 with tab2:
     st.subheader("Manage Custom Stocks & Sectors (Same Stock Allowed in Multiple Sectors)")
@@ -666,7 +704,7 @@ with tab2:
             view_t2 = view_t2[view_t2["Stock"].str.upper().str.contains(q, na=False)]
 
         view_t2 = view_t2.sort_values(by="Daily %", ascending=False).reset_index(drop=True)
-        render_scanner_table(view_t2.drop(columns=["Entry ID"]), display_text_col="Stock", height=550)
+        render_scanner_table(view_t2.drop(columns=["Entry ID"]), height=550)
 
         with st.expander("🗑️ Remove Specific Stock-Sector Entries"):
             entry_labels = {
