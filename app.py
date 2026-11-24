@@ -34,32 +34,9 @@ SIGNAL_OPTIONS = [
     "⚪ Inside Range",
 ]
 
-INDEX_TO_TV_SYMBOL = {
-    "^NSEI": "NSE:NIFTY",
-    "^NSEBANK": "NSE:BANKNIFTY",
-    "^CNXIT": "NSE:CNXIT",
-    "^CNXAUTO": "NSE:CNXAUTO",
-    "^CNXPHARMA": "NSE:CNXPHARMA",
-    "^CNXFMCG": "NSE:CNXFMCG",
-    "^CNXMETAL": "NSE:CNXMETAL",
-    "^CNXREALTY": "NSE:CNXREALTY",
-    "^CNXENERGY": "NSE:CNXENERGY",
-    "^CNXINFRA": "NSE:CNXINFRA",
-    "^CNXPSUBANK": "NSE:CNXPSUBANK",
-    "^CNXMEDIA": "NSE:CNXMEDIA",
-    "^CNXSC": "NSE:CNXSMALLCAP",
-    "^NSMIDCP": "NSE:NIFTYNEXT50",
-    "^CNXCMDT": "NSE:CNXCMDT",
-    "^CNXCONSUM": "NSE:CNXCONSUM",
-    "^CNXPSE": "NSE:CNXPSE",
-    "^CNXMNC": "NSE:CNXMNC",
-    "^CNXSERVICE": "NSE:CNXSERVICE",
-    "^INDIAVIX": "NSE:INDIAVIX",
-}
-
 DEFAULT_SECTORS = {
     "NIFTY 50": "^NSEI",
-    "NIFTY BANK": "^NSEBANK",
+    "NIFTY CEMENT": "NIFTY_CEMENT.NS",
     "NIFTY IT": "^CNXIT",
     "NIFTY AUTO": "^CNXAUTO",
     "NIFTY PHARMA": "^CNXPHARMA",
@@ -75,29 +52,52 @@ DEFAULT_SECTORS = {
     "NIFTY HEALTHCARE": "NIFTY_HEALTHCARE.NS",
     "NIFTY CONSUMER DUR": "NIFTY_CONSR_DURBL.NS",
     "NIFTY OIL & GAS": "NIFTY_OIL_AND_GAS.NS",
-    "NIFTY MIDCAP 100": "NIFTY_MIDCAP_100.NS",
-    "NIFTY SMALLCAP 100": "^CNXSC",
-    "NIFTY NEXT 50": "^NSMIDCP",
-    "NIFTY COMMODITIES": "^CNXCMDT",
-    "NIFTY CONSUMPTION": "^CNXCONSUM",
+    "NIFTY FINSEREXBNK": "NIFTY_FINSEREXBNK.NS",
+    "NIFTY RAILWAYSPSU": "NIFTY_RAILWAYSPSU.NS",
+    "NIFTY MS IT TELCM": "NIFTY_MS_IT_TELCM.NS",
     "NIFTY PSE": "^CNXPSE",
-    "NIFTY MNC": "^CNXMNC",
     "NIFTY SERVICES": "^CNXSERVICE",
     "NIFTY CPSE": "CPSE.NS",
     "NIFTY INDIA DEFENCE": "MODEFENCE.NS",
-    "NIFTY INDIA DIGITAL": "NIFTY_IND_DIGITAL.NS",
     "NIFTY INDIA MFG": "NIFTY_INDIA_MFG.NS",
-    "NIFTY TOURISM": "NIFTY_TOURISM.NS",
     "NIFTY CAPITAL MKT": "NIFTY_CAPITAL_MKT.NS",
     "NIFTY CHEMICALS": "NIFTY_CHEMICALS.NS",
-    "NIFTY EV & NEW AGE": "NIFTY_EV.NS",
     "NIFTY HOUSING": "NIFTY_HOUSING.NS",
-    "NIFTY MOBILITY": "NIFTY_MOBILITY.NS",
-    "NIFTY RURAL": "NIFTY_RURAL.NS",
-    "NIFTY NON-CYC CONS": "NIFTY_NONCYC_CONS.NS",
     "NIFTY TRANS & LOG": "NIFTY_TRANS_LOGIS.NS",
-    "NIFTY MICROCAP 250": "NIFTY_MICROCAP250.NS",
-    "INDIA VIX": "^INDIAVIX",
+}
+
+# Optional overrides for NSE index symbols that differ slightly on TradingView
+TV_SYMBOL_OVERRIDES = {
+    "^NSEI": "NSE:NIFTY",
+    "^NSEBANK": "NSE:BANKNIFTY",
+    "^CNXIT": "NSE:CNXIT",
+    "^CNXAUTO": "NSE:CNXAUTO",
+    "^CNXPHARMA": "NSE:CNXPHARMA",
+    "^CNXFMCG": "NSE:CNXFMCG",
+    "^CNXMETAL": "NSE:CNXMETAL",
+    "^CNXREALTY": "NSE:CNXREALTY",
+    "^CNXENERGY": "NSE:CNXENERGY",
+    "^CNXINFRA": "NSE:CNXINFRA",
+    "^CNXPSUBANK": "NSE:CNXPSUBANK",
+    "^CNXMEDIA": "NSE:CNXMEDIA",
+    "^CNXPSE": "NSE:CNXPSE",
+    "^CNXSERVICE": "NSE:CNXSERVICE",
+    "NIFTY_CEMENT.NS": "NSE:NIFTY_CEMENT",
+    "NIFTY_FIN_SERVICE.NS": "NSE:CNXFIN",
+    "NIFTY_PVT_BANK.NS": "NSE:NIFTY_PVT_BANK",
+    "NIFTY_HEALTHCARE.NS": "NSE:NIFTY_HEALTHCARE",
+    "NIFTY_CONSR_DURBL.NS": "NSE:NIFTY_CONSR_DURBL",
+    "NIFTY_OIL_AND_GAS.NS": "NSE:NIFTY_OIL_AND_GAS",
+    "NIFTY_FINSEREXBNK.NS": "NSE:NIFTY_FINSEREXBNK",
+    "NIFTY_RAILWAYSPSU.NS": "NSE:NIFTY_RAILWAYSPSU",
+    "NIFTY_MS_IT_TELCM.NS": "NSE:NIFTY_MS_IT_TELCM",
+    "CPSE.NS": "NSE:CPSE",
+    "MODEFENCE.NS": "NSE:NIFTYINDIA_DEFENCE",
+    "NIFTY_INDIA_MFG.NS": "NSE:NIFTY_INDIA_MFG",
+    "NIFTY_CAPITAL_MKT.NS": "NSE:NIFTY_CAPITAL_MKT",
+    "NIFTY_CHEMICALS.NS": "NSE:NIFTY_CHEMICALS",
+    "NIFTY_HOUSING.NS": "NSE:NIFTY_HOUSING",
+    "NIFTY_TRANS_LOGIS.NS": "NSE:NIFTY_TRANS_LOGIS",
 }
 
 DEFAULT_CUSTOM_STOCKS = [
@@ -119,16 +119,16 @@ def normalize_ticker(raw_symbol: str) -> str:
 
 
 def build_tradingview_url(ticker: str) -> str:
-    t = str(ticker).strip().upper()
-    if t in INDEX_TO_TV_SYMBOL:
-        tv_sym = INDEX_TO_TV_SYMBOL[t]
-    elif t.endswith(".NS"):
-        tv_sym = f"NSE:{t[:-3]}"
-    elif t.endswith(".BO"):
-        tv_sym = f"BSE:{t[:-3]}"
+    clean = str(ticker).strip().upper()
+    if clean in TV_SYMBOL_OVERRIDES:
+        tv_sym = TV_SYMBOL_OVERRIDES[clean]
+    elif clean.endswith(".NS"):
+        tv_sym = f"NSE:{clean[:-3]}"
+    elif clean.endswith(".BO"):
+        tv_sym = f"BSE:{clean[:-3]}"
     else:
-        tv_sym = t.lstrip("^")
-    return f"https://www.tradingview.com/chart/?symbol={quote(tv_sym)}"
+        tv_sym = f"NSE:{clean.lstrip('^')}"
+    return f"https://www.tradingview.com/chart/?symbol={quote(tv_sym, safe=':')}"
 
 
 def load_custom_stocks():
@@ -331,8 +331,8 @@ def build_sectors_df(sector_dict: dict, metrics_map: dict) -> pd.DataFrame:
         if m:
             rows.append({
                 "Sector": name,
+                "TV Chart": build_tradingview_url(ticker),
                 "Ticker": ticker,
-                "Chart": build_tradingview_url(ticker),
                 **m,
             })
     return pd.DataFrame(rows)
@@ -348,7 +348,7 @@ def build_custom_stocks_df(entries: list, metrics_map: dict) -> pd.DataFrame:
             rows.append({
                 "Entry ID": item["id"],
                 "Stock": sym,
-                "Chart": build_tradingview_url(sym),
+                "TV Chart": build_tradingview_url(sym),
                 "Sector": sec,
                 **m,
             })
@@ -356,63 +356,32 @@ def build_custom_stocks_df(entries: list, metrics_map: dict) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------
-# 4. STYLING & TABLE RENDER HELPER
+# 4. TABLE RENDER HELPER (WITH TRADINGVIEW LINK COLUMN)
 # ---------------------------------------------------------
-def color_pct(val):
-    if isinstance(val, (int, float)):
-        if val > 0:
-            return "color: #00c853; font-weight: 600;"
-        elif val < 0:
-            return "color: #ff1744; font-weight: 600;"
-    return ""
-
-
-def highlight_signal(val):
-    s = str(val)
-    if "STRONG BULL" in s:
-        return "background-color: rgba(0, 200, 83, 0.25); color: #00e676; font-weight: bold;"
-    elif "STRONG BEAR" in s:
-        return "background-color: rgba(255, 23, 68, 0.25); color: #ff5252; font-weight: bold;"
-    elif "Crossed PDH" in s or "Crossed 15m High" in s:
-        return "background-color: rgba(0, 200, 83, 0.12); color: #69f0ae;"
-    elif "Crossed PDL" in s or "Crossed 15m Low" in s:
-        return "background-color: rgba(255, 23, 68, 0.12); color: #ff8a80;"
-    return "color: #9e9e9e;"
-
-
 PCT_COLS = ["Daily %", "5m %", "10m %", "15m %", "30m %", "1h %", "4h %"]
+PRICE_COLS = ["LTP", "PDH", "PDL", "15m High", "15m Low"]
 
 
-def render_scanner_table(df: pd.DataFrame, height: int = 600):
-    styled = (
-        df.style.map(color_pct, subset=PCT_COLS)
-        .map(highlight_signal, subset=["Signal"])
-        .format({
-            "LTP": "{:,.2f}",
-            "PDH": "{:,.2f}",
-            "PDL": "{:,.2f}",
-            "15m High": "{:,.2f}",
-            "15m Low": "{:,.2f}",
-            "Daily %": "{:+.2f}%",
-            "5m %": "{:+.2f}%",
-            "10m %": "{:+.2f}%",
-            "15m %": "{:+.2f}%",
-            "30m %": "{:+.2f}%",
-            "1h %": "{:+.2f}%",
-            "4h %": "{:+.2f}%",
-        })
-    )
+def render_scanner_table(df: pd.DataFrame, display_text_col: str, height: int = 600):
+    column_config = {
+        "TV Chart": st.column_config.LinkColumn(
+            label="TradingView",
+            display_text="Open Chart ↗",
+        ),
+    }
+    for col in PRICE_COLS:
+        if col in df.columns:
+            column_config[col] = st.column_config.NumberColumn(col, format="%.2f")
+    for col in PCT_COLS:
+        if col in df.columns:
+            column_config[col] = st.column_config.NumberColumn(col, format="%+.2f%%")
+
     st.dataframe(
-        styled,
+        df,
+        column_config=column_config,
         use_container_width=True,
         height=height,
         hide_index=True,
-        column_config={
-            "Chart": st.column_config.LinkColumn(
-                "TradingView",
-                display_text="Open Chart ↗",
-            )
-        },
     )
 
 
@@ -485,7 +454,7 @@ with tab1:
         )
 
         view_t1 = apply_signal_filter(sector_df, t1_filter).sort_values(by="Daily %", ascending=False).reset_index(drop=True)
-        render_scanner_table(view_t1)
+        render_scanner_table(view_t1, display_text_col="Sector")
 
 # ---------------------------------------------------------
 # 7. TAB 2: CUSTOM STOCK SCANNER (UP TO 700 ENTRIES)
@@ -697,7 +666,7 @@ with tab2:
             view_t2 = view_t2[view_t2["Stock"].str.upper().str.contains(q, na=False)]
 
         view_t2 = view_t2.sort_values(by="Daily %", ascending=False).reset_index(drop=True)
-        render_scanner_table(view_t2.drop(columns=["Entry ID"]), height=550)
+        render_scanner_table(view_t2.drop(columns=["Entry ID"]), display_text_col="Stock", height=550)
 
         with st.expander("🗑️ Remove Specific Stock-Sector Entries"):
             entry_labels = {
