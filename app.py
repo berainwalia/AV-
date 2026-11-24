@@ -423,16 +423,10 @@ def render_scanner_table(df: pd.DataFrame, height: int = 600):
 
 
 def apply_signal_filter(df: pd.DataFrame, filter_choice: str) -> pd.DataFrame:
-    if filter_choice == "Only Breakouts (Bullish)":
-        return df[df["Signal"].str.contains("BULL|PDH|15m High", na=False)]
-    elif filter_choice == "Only Breakdowns (Bearish)":
-        return df[df["Signal"].str.contains("BEAR|PDL|15m Low", na=False)]
-    elif filter_choice == "Dual Breakouts/Breakdowns Only":
-        return df[df["Signal"].str.contains("STRONG", na=False)]
-    elif filter_choice == "PDH / PDL Crosses Only":
-        return df[df["Signal"].str.contains("PDH|PDL|STRONG", na=False)]
-    elif filter_choice == "15m ORB Crosses Only":
-        return df[df["Signal"].str.contains("15m|STRONG", na=False)]
+    if filter_choice == "All Signals":
+        return df
+    if filter_choice in SIGNAL_OPTIONS:
+        return df[df["Signal"] == filter_choice]
     return df
 
 
@@ -478,15 +472,8 @@ with tab1:
         c4.metric("🔴 Below Prev Day Low", int((sector_df["PDH Status"] == "Below PDL").sum()))
 
         t1_filter = st.radio(
-            "Filter Sectors:",
-            [
-                "All Sectors",
-                "Only Breakouts (Bullish)",
-                "Only Breakdowns (Bearish)",
-                "Dual Breakouts/Breakdowns Only",
-                "PDH / PDL Crosses Only",
-                "15m ORB Crosses Only",
-            ],
+            "Filter Sectors by Signal:",
+            ["All Signals"] + SIGNAL_OPTIONS,
             horizontal=True,
             key="tab1_filter",
         )
