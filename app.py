@@ -751,8 +751,13 @@ with tab2:
 
         f_col1, f_col2, f_col3 = st.columns([2, 2, 2])
         with f_col1:
-            available_sectors = ["All Sectors"] + sorted(stock_df["Sector"].unique().tolist())
-            selected_sec_filter = st.selectbox("Filter by Sector:", available_sectors, key="tab2_sec_filter")
+            available_sectors = sorted(stock_df["Sector"].unique().tolist())
+            selected_sec_filters = st.multiselect(
+                "Filter by Sector (select one or more; empty = all):",
+                available_sectors,
+                default=[],
+                key="tab2_sec_filter",
+            )
         with f_col2:
             present_signals = [opt for opt in SIGNAL_OPTIONS if opt in stock_df["Signal"].unique()]
             signal_filter_choices = ["All Signals"] + present_signals
@@ -765,8 +770,8 @@ with tab2:
             search_stock = st.text_input("Search Stock Symbol:", placeholder="e.g., RELIANCE", key="tab2_search")
 
         view_t2 = stock_df.copy()
-        if selected_sec_filter != "All Sectors":
-            view_t2 = view_t2[view_t2["Sector"] == selected_sec_filter]
+        if selected_sec_filters:
+            view_t2 = view_t2[view_t2["Sector"].isin(selected_sec_filters)]
         if selected_sig_filter != "All Signals":
             view_t2 = view_t2[view_t2["Signal"] == selected_sig_filter]
         if search_stock.strip():
