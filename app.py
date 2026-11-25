@@ -160,7 +160,6 @@ def save_custom_stocks(entries):
 # 2. DAILY 9:10 AM IST AUTO-RESET ENGINE
 # ---------------------------------------------------------
 def get_current_reset_anchor(now_ist: datetime):
-    """Returns today's date if current IST time >= 9:10 AM, else yesterday's date."""
     if now_ist.time() >= DAILY_RESET_TIME:
         return now_ist.date()
     return (now_ist - timedelta(days=1)).date()
@@ -180,7 +179,6 @@ def check_daily_910_reset():
     if "custom_stocks" not in st.session_state:
         st.session_state.custom_stocks = load_custom_stocks()
 
-    # Trigger reset once when crossing 9:10 AM IST on a new day
     if st.session_state.last_auto_reset_date != active_anchor:
         st.cache_data.clear()
         st.session_state.sectors = DEFAULT_SECTORS.copy()
@@ -309,6 +307,36 @@ def compute_metrics_for_ticker(df: pd.DataFrame):
                 return ((ltp - past_price) / past_price) * 100
         return 0.0
 
+    # Volume calculations from 5m bars
+    vol_series = df["Volume"].fillna(0.0) if "Volume" in df.columns else pd.Series(0.0, index=df.index)
+    today_vol_series = today_df["Volume"].fillna(0.0) if "Volume" in today_df.columns else pd.Series(0.0, index=today_df.index)
+    prev_vol_series = prev_df["Volume"].fillna(0.0) if "Volume" in prev_df.columns else pd.Series(0.0, index=prev_df.index)
+
+    daily_vol = float(today_vol_series.sum())
+    prev_daily_vol = float(prev_vol_series.sum())
+    daily_vol_pct = round(((daily_vol - prev_daily_vol) / prev_daily_vol) * 100, 2) if prev_daily_vol > 0 else 0.0
+
+    def window_vol_and_pct(bars_count: int):
+        if len(vol_series) >= bars_count:
+            curr_vol = float(vol_series.iloc[-bars_count:].sum())
+        else:
+            curr_vol = float(vol_series.sum())
+
+        if len(vol_series) >= bars_count * 2:
+            prev_window_vol = float(vol_series.iloc[-(bars_count * 2):-bars_count].sum())
+        else:
+            prev_window_vol = 0.0
+
+        vol_pct = round(((curr_vol - prev_window_vol) / prev_window_vol) * 100, 2) if prev_window_vol > 0 else 0.0
+        return int(round(curr_vol)), vol_pct
+
+    # 5m = 1 bar, 10m = 2 bars, 15m = 3 bars, 1h = 12 bars, 4h = 48 bars
+    vol_5m, vol_5m_pct = window_vol_and_pct(1)
+    vol_10m, vol_10m_pct = window_vol_and_pct(2)
+    vol_15m, vol_15m_pct = window_vol_and_pct(3)
+    vol_1h, vol_1h_pct = window_vol_and_pct(12)
+    vol_4h, vol_4h_pct = window_vol_and_pct(48)
+
     return {
         "LTP": round(ltp, 2),
         "Signal": signal,
@@ -321,6 +349,18 @@ def compute_metrics_for_ticker(df: pd.DataFrame):
         "30m %": round(pct_change_bars(6), 2),
         "1h %": round(pct_change_bars(12), 2),
         "4h %": round(pct_change_bars(48), 2),
+        "Daily Vol": int(round(daily_vol)),
+        "5m Vol": vol_5m,
+        "10m Vol": vol_10m,
+        "15m Vol": vol_15m,
+        "1h Vol": vol_1h,
+        "4h Vol": vol_4h,
+        "Daily Vol %": daily_vol_pct,
+        "5m Vol %": vol_5m_pct,
+        "10m Vol %": vol_10m_pct,
+        "15m Vol %": vol_15m_pct,
+        "1h Vol %": vol_1h_pct,
+        "4h Vol %": vol_4h_pct,
         "PDH": round(pdh, 2),
         "PDL": round(pdl, 2),
         "15m High": round(orb_high, 2),
@@ -366,11 +406,16 @@ def build_sectors_df(sector_dict: dict, metrics_map: dict) -> pd.DataFrame:
     for name, ticker in sector_dict.items():
         m = metrics_map.get(ticker)
         if m:
+            # Keep sector table focused on price/breakout columns
+            sector_metrics = {
+                k: v for k, v in m.items()
+                if not k.endswith("Vol") and not k.endswith("Vol %")
+            }
             rows.append({
                 "Sector": name,
                 "TV Chart": build_tradingview_url(ticker),
                 "Ticker": ticker,
-                **m,
+                **sector_metrics,
             })
     return pd.DataFrame(rows)
 
@@ -395,8 +440,12 @@ def build_custom_stocks_df(entries: list, metrics_map: dict) -> pd.DataFrame:
 # ---------------------------------------------------------
 # 5. TABLE RENDER HELPER (WITH TRADINGVIEW LINK COLUMN)
 # ---------------------------------------------------------
-PCT_COLS = ["Daily %", "5m %", "10m %", "15m %", "30m %", "1h %", "4h %"]
+PCT_COLS = [
+    "Daily %", "5m %", "10m %", "15m %", "30m %", "1h %", "4h %",
+    "Daily Vol %", "5m Vol %", "10m Vol %", "15m Vol %", "1h Vol %", "4h Vol %",
+]
 PRICE_COLS = ["LTP", "PDH", "PDL", "15m High", "15m Low"]
+VOL_COLS = ["Daily Vol", "5m Vol", "10m Vol", "15m Vol", "1h Vol", "4h Vol"]
 
 
 def render_scanner_table(df: pd.DataFrame, height: int = 600):
@@ -409,6 +458,9 @@ def render_scanner_table(df: pd.DataFrame, height: int = 600):
     for col in PRICE_COLS:
         if col in df.columns:
             column_config[col] = st.column_config.NumberColumn(col, format="%.2f")
+    for col in VOL_COLS:
+        if col in df.columns:
+            column_config[col] = st.column_config.NumberColumn(col, format="%d")
     for col in PCT_COLS:
         if col in df.columns:
             column_config[col] = st.column_config.NumberColumn(col, format="%+.2f%%")
