@@ -307,7 +307,6 @@ def compute_metrics_for_ticker(df: pd.DataFrame):
                 return ((ltp - past_price) / past_price) * 100
         return 0.0
 
-    # Volume calculations from 5m bars
     vol_series = df["Volume"].fillna(0.0) if "Volume" in df.columns else pd.Series(0.0, index=df.index)
     today_vol_series = today_df["Volume"].fillna(0.0) if "Volume" in today_df.columns else pd.Series(0.0, index=today_df.index)
     prev_vol_series = prev_df["Volume"].fillna(0.0) if "Volume" in prev_df.columns else pd.Series(0.0, index=prev_df.index)
@@ -330,7 +329,6 @@ def compute_metrics_for_ticker(df: pd.DataFrame):
         vol_pct = round(((curr_vol - prev_window_vol) / prev_window_vol) * 100, 2) if prev_window_vol > 0 else 0.0
         return int(round(curr_vol)), vol_pct
 
-    # 5m = 1 bar, 10m = 2 bars, 15m = 3 bars, 1h = 12 bars, 4h = 48 bars
     vol_5m, vol_5m_pct = window_vol_and_pct(1)
     vol_10m, vol_10m_pct = window_vol_and_pct(2)
     vol_15m, vol_15m_pct = window_vol_and_pct(3)
@@ -406,7 +404,6 @@ def build_sectors_df(sector_dict: dict, metrics_map: dict) -> pd.DataFrame:
     for name, ticker in sector_dict.items():
         m = metrics_map.get(ticker)
         if m:
-            # Keep sector table focused on price/breakout columns
             sector_metrics = {
                 k: v for k, v in m.items()
                 if not k.endswith("Vol") and not k.endswith("Vol %")
@@ -438,7 +435,7 @@ def build_custom_stocks_df(entries: list, metrics_map: dict) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------
-# 5. TABLE RENDER HELPER (WITH TRADINGVIEW LINK COLUMN)
+# 5. STYLING & TABLE RENDER HELPER (GREEN > 0, RED < 0)
 # ---------------------------------------------------------
 PCT_COLS = [
     "Daily %", "5m %", "10m %", "15m %", "30m %", "1h %", "4h %",
@@ -448,25 +445,59 @@ PRICE_COLS = ["LTP", "PDH", "PDL", "15m High", "15m Low"]
 VOL_COLS = ["Daily Vol", "5m Vol", "10m Vol", "15m Vol", "1h Vol", "4h Vol"]
 
 
+def highlight_pos_neg(val):
+    if isinstance(val, (int, float)):
+        if val > 0:
+            return "color: #00c853; font-weight: 600;"
+        elif val < 0:
+            return "color: #ff1744; font-weight: 600;"
+    return ""
+
+
+def highlight_signal(val):
+    s = str(val)
+    if "STRONG BULL" in s:
+        return "background-color: rgba(0, 200, 83, 0.25); color: #00e676; font-weight: bold;"
+    elif "STRONG BEAR" in s:
+        return "background-color: rgba(255, 23, 68, 0.25); color: #ff5252; font-weight: bold;"
+    elif "Crossed PDH" in s or "Crossed 15m High" in s:
+        return "background-color: rgba(0, 200, 83, 0.12); color: #69f0ae;"
+    elif "Crossed PDL" in s or "Crossed 15m Low" in s:
+        return "background-color: rgba(255, 23, 68, 0.12); color: #ff8a80;"
+    return "color: #9e9e9e;"
+
+
 def render_scanner_table(df: pd.DataFrame, height: int = 600):
+    present_price_cols = [c for c in PRICE_COLS if c in df.columns]
+    present_vol_cols = [c for c in VOL_COLS if c in df.columns]
+    present_pct_cols = [c for c in PCT_COLS if c in df.columns]
+    numeric_highlight_cols = present_price_cols + present_vol_cols + present_pct_cols
+
+    format_dict = {}
+    for c in present_price_cols:
+        format_dict[c] = "{:,.2f}"
+    for c in present_vol_cols:
+        format_dict[c] = "{:,}"
+    for c in present_pct_cols:
+        format_dict[c] = "{:+.2f}%"
+
+    styled = df.style
+    if numeric_highlight_cols:
+        styled = styled.map(highlight_pos_neg, subset=numeric_highlight_cols)
+    if "Signal" in df.columns:
+        styled = styled.map(highlight_signal, subset=["Signal"])
+    if format_dict:
+        styled = styled.format(format_dict)
+
     column_config = {
         "TV Chart": st.column_config.LinkColumn(
             label="TradingView",
             display_text="Open Chart ↗",
         ),
     }
-    for col in PRICE_COLS:
-        if col in df.columns:
-            column_config[col] = st.column_config.NumberColumn(col, format="%.2f")
-    for col in VOL_COLS:
-        if col in df.columns:
-            column_config[col] = st.column_config.NumberColumn(col, format="%d")
-    for col in PCT_COLS:
-        if col in df.columns:
-            column_config[col] = st.column_config.NumberColumn(col, format="%+.2f%%")
 
     st.dataframe(
-        df,
+        styled,
         column_config=column_config,
         use_container_width=True,
         height=height,
